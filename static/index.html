@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Echo Ego — 入力して話す</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main>
+<header class="appbar">
+  <a class="brand" href="#speak" aria-label="Echo Ego 発話画面"><span class="brandmark" aria-hidden="true"><svg class="brand-icon" viewBox="0 0 32 32"><use href="/static/icons.svg#workshop"></use></svg></span>Echo Ego</a>
+  <nav aria-label="画面切り替え"><a id="nav-speak" href="#speak" aria-current="page"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#voice"></use></svg>発話</a><a id="nav-history" href="#history"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#history"></use></svg>履歴 <span id="history-count" class="badge">0</span></a></nav>
+  <nav aria-label="管理画面"><a id="nav-voices" href="#voices">声</a><a id="nav-settings" href="#settings">設定</a><a id="nav-guide" href="#guide">使い方</a></nav>
+  <span id="status" role="status">接続しています…</span>
+</header>
+<section id="speak-view" class="screen" aria-labelledby="speak-title">
+  <div class="screen-heading"><span class="workshop-caption">YOUR WORDS, YOUR VOICE</span><h1 id="speak-title">話したいことを、ここに。</h1><p>文を入力してEnter。選んだ声で発話します。</p></div>
+  <section class="composer" aria-label="発話の入力">
+    <label for="text" class="field-title">話す内容</label>
+    <textarea id="text" maxlength="160" placeholder="こんにちは。今日はいい天気ですね。" autofocus></textarea>
+    <div class="hint"><span>Enterで発話 · Shift＋Enterで改行</span><span id="count">0 / 160</span></div>
+    <div class="controls"><label>声<select id="voice"></select></label><label>話す速さ<select id="speed"><option value="1">1.0倍</option><option value="1.2">1.2倍</option><option value="0.85">0.85倍</option></select></label></div>
+    <div class="actions"><button id="speak" disabled><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#voice"></use></svg>発話する <span class="keycap" aria-hidden="true">↵</span></button><button id="stop" class="secondary" disabled><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#stop"></use></svg>停止</button><button id="upload-button" class="upload"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#upload"></use></svg>自分の声を登録</button><input id="upload" type="file" accept=".wav" hidden></div>
+    <p class="small">自分の声は1〜30秒・20MB以内のWAVで登録できます。</p>
+    <div class="phrases" aria-label="よく使う言葉"><button data-text="はい、わかりました。">はい、わかりました</button><button data-text="ありがとうございます。">ありがとうございます</button><button data-text="少し待ってください。">少し待ってください</button></div>
+    <p id="message" role="status"></p>
+    <div id="queue-list" aria-label="発話待ち"></div>
+  </section>
+  <div class="response-summary"><span>送信から再生開始まで</span><strong id="total">—<small> 秒</small></strong><span class="response-caption">最新の発話</span></div>
+  <details class="details-panel"><summary><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#settings"></use></svg>応答時間の詳細・生成設定</summary><div class="detail-content">
+    <div class="metrics"><div><span>音声受信まで</span><strong id="received">—<small> 秒</small></strong></div><div><span>音声先頭の無音目安</span><strong id="silence">—<small> 秒</small></strong></div></div>
+    <p class="small">再生開始はブラウザーの再生スケジュールまでの時間です。先頭の無音と出力機器の遅延が加わります。</p>
+    <label class="advanced-label">生成ステップ<select id="steps"><option value="4">4 — 標準・高速</option><option value="6">6 — 比較用</option><option value="8">8 — 比較用</option></select></label><p id="model" class="small">音声を準備しています</p>
+  </div></details>
+</section>
+<section id="history-view" class="screen" aria-labelledby="history-title" hidden>
+  <div class="screen-heading history-heading"><div><span class="workshop-caption">VOICE ARCHIVE</span><h1 id="history-title">発話履歴</h1><p>生成した日時を確認して、もう一度再生できます。</p></div><button id="clear" class="danger-outline" disabled><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#delete"></use></svg>すべて削除</button></div>
+  <div id="history-notice" class="notice" role="status" hidden><span id="history-notice-text"></span><button id="undo" class="textbutton"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#undo"></use></svg>元に戻す</button></div>
+  <section class="history" aria-label="生成された音声の一覧"><div id="empty"><div class="empty-symbol" aria-hidden="true"><svg viewBox="0 0 48 48"><use href="/static/icons.svg#record"></use></svg></div><h2>まだ履歴がありません</h2><p>発話すると、生成日時・文章・音声がここに表示されます。</p><a href="#speak" class="back-link">発話画面へ</a></div><div id="history"></div></section>
+  <p id="history-policy" class="small history-note"></p>
+</section>
+<section id="voices-view" class="screen" hidden aria-labelledby="voices-title">
+  <div class="screen-heading"><span class="workshop-caption">VOICE COLLECTION</span><h1 id="voices-title">声の管理</h1><p>名前やお気に入りを設定して、会話に使う声を選びます。</p></div>
+  <section class="composer"><h2>自分の声を録音</h2><p class="small">本人の声、または利用許可のある声を登録してください。静かな場所で1〜30秒録音します。</p>
+    <label>マイク<select id="microphone"><option value="">標準のマイク</option></select></label>
+    <div class="actions"><button id="mic-devices" class="secondary">マイクを確認</button><button id="record-start">録音開始</button><button id="record-end" class="secondary" disabled>録音終了</button><button id="record-cancel" class="secondary" disabled>取消</button></div>
+    <p id="record-status" role="status">録音はこのPC内で処理します。</p><meter id="record-level" min="0" max="1" value="0" aria-label="マイク音量"></meter>
+    <audio id="record-preview" controls hidden></audio><button id="record-save" hidden>この録音を登録</button>
+    <p>WAVファイルを登録する場合は、発話画面の「自分の声を登録」を使います。</p>
+  </section><p id="voice-notice" role="status"></p><div id="voice-list"></div>
+</section>
+<section id="settings-view" class="screen" hidden aria-labelledby="settings-title">
+  <div class="screen-heading"><span class="workshop-caption">WORKSHOP SETTINGS</span><h1 id="settings-title">設定</h1><p>発話・保存・Irodori-TTSの環境を設定します。</p></div>
+  <section class="composer"><h2>再生と履歴</h2><label>音量<input id="volume" type="range" min="0" max="1" step="0.05" value="0.8"></label><label>音声出力<select id="output-device"><option value="">標準の出力先</option></select></label><button id="output-devices" class="secondary">出力先を確認</button><button id="test-output" class="secondary">確認音を鳴らす</button><p id="output-notice" class="small"></p>
+    <label class="check-label"><input id="history-enabled" type="checkbox">履歴を音声込みでこのPCに保存する</label><p class="small">保存をオフにして設定を保存すると、ディスク内の履歴を削除します。保存しない場合はタブ内で最大10件保持します。</p>
+    <div class="controls"><label>保存件数<input id="history-limit" type="number" min="1" max="500" value="50"></label><label>保存期間（日）<input id="history-days" type="number" min="1" max="365" value="7"></label><label>保存容量（MB）<input id="history-mb" type="number" min="1" max="1000" value="100"></label></div>
+    <h2>定型句</h2><p class="small">最大9件。Alt＋1〜9で発話できます。声・速さ・ステップ・読み辞書を変えると別の音声を生成します。</p><div id="phrase-editor"></div><button id="phrase-add" class="secondary">定型句を追加</button><button id="phrase-prepare" class="secondary">定型句を事前生成</button><button id="cache-clear" class="secondary">定型句の音声を削除</button><p id="cache-notice" role="status"></p>
+    <h2>読み辞書</h2><p class="small">表示する文章はそのまま、発話用の読みだけ置き換えます。</p><div id="dictionary-editor"></div><button id="dictionary-add" class="secondary">読みを追加</button>
+    <div class="actions"><button id="save-settings">設定を保存</button></div><p id="settings-notice" role="status"></p>
+  </section>
+  <details class="details-panel"><summary>Irodori-TTSの環境設定</summary><div class="detail-content"><p id="diagnostics"></p><p class="small">変更は保存してアプリを終了・起動すると反映されます。相対パスはEcho Egoフォルダーが基準です。</p>
+    <div id="runtime-fields"></div><label>実行先<select id="runtime-device"><option value="cuda">CUDA GPU（BF16）</option><option value="cpu">CPU（FP32・低速）</option></select></label>
+    <label class="check-label"><input id="runtime-preload" type="checkbox">起動時にモデルを読み込む</label><label class="check-label"><input id="runtime-offline" type="checkbox">オフラインで実行する（導入後）</label>
+    <div class="actions"><button id="save-runtime">環境設定を保存</button><button id="load-runtime" class="secondary">モデルを読み込む</button><button id="shutdown" class="danger-outline">アプリを終了</button></div><p id="runtime-notice" role="status"></p>
+  </div></details>
+</section>
+<section id="guide-view" class="screen" hidden aria-labelledby="guide-title"><div class="screen-heading"><span class="workshop-caption">WORKSHOP HANDBOOK</span><h1 id="guide-title">マニュアル</h1><p>操作・Irodori-TTSの導入・配布について確認できます。</p></div><div class="actions"><button data-manual="user">使い方</button><button data-manual="setup" class="secondary">Irodori-TTSの設定</button><button data-manual="release" class="secondary">GitHub配布</button></div><article id="manual-content" class="composer manual"></article></section>
+<footer><span><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#lock"></use></svg>入力と音声は、このPC内で処理します。</span><span class="footer-signature">ECHO EGO / VOICE WORKSHOP</span></footer>
+</main><script src="/static/app.js"></script><script src="/static/features.js"></script></body></html>

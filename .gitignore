@@ -1,0 +1,11 @@
+.runtime/
+runtime/
+voices/
+__pycache__/
+.venv/
+data/
+presets/
+config.local.json
+config.local.tmp
+dist/
+.pytest_cache/

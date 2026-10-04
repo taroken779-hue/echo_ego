@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" fill="none" stroke="#c59b27" stroke-width="1">
+<circle cx="200" cy="200" r="164"/><circle cx="200" cy="200" r="150"/><circle cx="200" cy="200" r="124"/><circle cx="200" cy="200" r="50"/><circle cx="200" cy="200" r="38"/>
+<g stroke-width="5"><path d="M200 22v30m0 296v30M22 200h30m296 0h30M74 74l22 22m208 208 22 22M74 326l22-22M304 96l22-22M132 35l12 29m112 272 12 29M35 132l29 12m272 112 29 12M35 268l29-12m272-112 29-12M132 365l12-29M256 64l12-29"/></g>
+<g stroke-width="9"><path d="M200 78v69m0 106v69M78 200h69m106 0h69M114 114l48 48m76 76 48 48M114 286l48-48m76-76 48-48"/></g>
+</svg>

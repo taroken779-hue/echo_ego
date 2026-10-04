@@ -1,0 +1,15 @@
+{
+  "python_path": ".venv/Scripts/python.exe",
+  "source_path": "runtime/Irodori-TTS",
+  "model_path": "runtime/models/MF/model.safetensors",
+  "codec_repo": "Aratako/Semantic-DACVAE-Japanese-32dim",
+  "presets_dir": "presets",
+  "hf_home": "runtime/hf-cache",
+  "device": "cuda",
+  "precision": "bf16",
+  "codec_precision": "fp32",
+  "compile_model": false,
+  "port": 8100,
+  "offline": true,
+  "preload": true
+}
