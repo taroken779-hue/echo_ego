@@ -28,6 +28,10 @@ class ApiTests(unittest.TestCase):
         def fake_call(action,payload=None,timeout=180):
             cls.calls.append((action,payload))
             if action=="translate":return {"text":"I am waiting at Nihonbashi."}
+            if action=="transcribe-reference":
+                return {"reference_transcript":"自動認識の下書きです。","reference_language":payload["reference_language"],
+                        "clip_start_ms":payload.get("clip_start_ms") or 0,"clip_end_ms":payload.get("clip_end_ms") or 4000,
+                        "wav_sha256":payload["wav_sha256"]}
             if action=="synthesize":
                 out=io.BytesIO();sf.write(out,np.sin(np.arange(2400)*.1)*.2,24000,format="WAV")
                 return {"audio":base64.b64encode(out.getvalue()).decode(),"headers":{"X-Synthesis-Ms":"1","X-Generated-At":"2026-10-19T00:00:00Z"}}
@@ -75,6 +79,58 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/v2/engines',headers={'Origin':'https://example.com'}).status_code,403)
         self.assertEqual(self.client.post('/api/v2/reading-preview',json={'text':'[laughter]'}).status_code,422)
         self.assertEqual(self.client.post('/api/v2/speech-jobs',json={'client_id':'t','request_id':'bad','voice_id':'custom:test','text':'test','mode':'ja_to_en','engine':'irodori'}).status_code,422)
+
+    def test_04_auto_draft_preserves_profile_and_checks_audio_identity(self):
+        import hashlib
+        original=self.app.service.profile('custom:test')
+        with patch.object(self.app,'resolve_voice',return_value=self.path):
+            r=self.client.post('/api/v2/voices/custom:test/auto-reference',json={'reference_language':'en','clip_start_ms':500,'clip_end_ms':3500})
+            self.assertEqual(r.status_code,202,r.text)
+            for _ in range(100):
+                result=self.client.get('/api/v2/voices/custom:test/auto-reference').json()
+                if result['state']!='transcribing':break
+                time.sleep(.01)
+            self.assertEqual(result['state'],'ready',result)
+            draft=result['reference']
+            self.assertEqual((draft['clip_start_ms'],draft['clip_end_ms'],draft['reference_language']),(500,3500,'en'))
+            self.assertEqual(self.app.service.profile('custom:test'),original)
+            draft['wav_sha256']='0'*64
+            self.assertEqual(self.client.put('/api/v2/voices/custom:test/reference',json=draft).status_code,422)
+            self.assertEqual(self.app.service.profile('custom:test'),original)
+            draft['wav_sha256']=hashlib.sha256(self.path.read_bytes()).hexdigest()
+            self.assertEqual(self.client.put('/api/v2/voices/custom:test/reference',json=draft).status_code,200)
+            self.assertEqual(self.app.service.profile('custom:test')['reference_transcript'],draft['reference_transcript'])
+            self.assertEqual(self.client.post('/api/v2/voices/custom:test/auto-reference',json={'clip_start_ms':0}).status_code,422)
+
+    def test_05_standard_defaults_never_override_saved_settings(self):
+        from speech.reference import DESIGN_TRANSCRIPT
+        ref=self.app.service.profile('design:calm_male')
+        self.assertEqual(ref['reference_transcript'],DESIGN_TRANSCRIPT)
+        self.assertEqual(ref['clip_end_ms'],4000)
+        from speech.service import VoiceReference
+        saved=VoiceReference(reference_transcript='手動の設定を保持します。',clip_start_ms=0,clip_end_ms=3000)
+        self.app.service.save_profile('design:calm_male',saved)
+        self.assertEqual(self.app.service.profile('design:calm_male')['reference_transcript'],saved.reference_transcript)
+
+    def test_06_changed_recording_and_competing_transcription(self):
+        from speech.service import AutoReference
+        from speech.jobs import JobError
+        self.app.service.transcriptions['custom:busy']={'state':'transcribing','key':'other'}
+        try:
+            with self.assertRaises(JobError) as error:
+                self.app.service.transcribe_reference('custom:busy',AutoReference())
+            self.assertEqual(error.exception.status,409)
+        finally:
+            self.app.service.transcriptions.pop('custom:busy')
+        original=self.path.read_bytes()
+        try:
+            sf.write(self.path,np.sin(np.arange(24000*4)*.06)*.1,24000)
+            with self.assertRaisesRegex(ValueError,'録音が変更'):
+                self.app.service.reference('custom:test')
+            with patch.object(self.app,'resolve_voice',return_value=self.path):
+                self.assertTrue(self.client.get('/api/v2/voices/custom:test/reference').json()['reference_audio_changed'])
+        finally:
+            self.path.write_bytes(original)
 
 
 if __name__=='__main__':unittest.main()

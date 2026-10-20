@@ -186,9 +186,54 @@ function referenceEditor(voice) {
   const startLabel=document.createElement('label');startLabel.textContent='開始（秒）';startLabel.append(start);const endLabel=document.createElement('label');endLabel.textContent='終了（秒・3〜10秒の区間）';endLabel.append(end);
   const language=document.createElement('select');language.setAttribute('aria-label','録音の言語');language.append(new Option('日本語の録音','ja'),new Option('英語の録音','en'));
   const button=document.createElement('button');button.textContent='参照を保存して準備';button.className='secondary';const status=document.createElement('p');status.setAttribute('role','status');
-  const help=document.createElement('p');help.className='small';help.textContent='元の録音は両エンジンで共用します。OmniVoiceは選択区間と文字起こしを追加で使います。録音全体ではなく、指定した区間だけの言葉を正確に入力してください。';details.append(help,startLabel,endLabel,language,transcript,button,status);let loaded=false;
-  details.ontoggle=async()=>{if(!details.open || loaded)return;try{const ref=await api('/api/v2/voices/'+voice.id+'/reference');start.value=ref.clip_start_ms/1000;end.value=ref.clip_end_ms==null?Math.min(10,ref.duration_seconds || 10):ref.clip_end_ms/1000;transcript.value=ref.reference_transcript;language.value=ref.reference_language;loaded=true;}catch(e){status.textContent=e.message;}};
-  button.onclick=async()=>{button.disabled=true;try{await api('/api/v2/voices/'+voice.id+'/reference',jsonRequest('PUT',{reference_transcript:transcript.value,reference_language:language.value,clip_start_ms:Math.round(Number(start.value)*1000),clip_end_ms:Math.round(Number(end.value)*1000)}));let ref=await api('/api/v2/voices/'+voice.id+'/prepare',{method:'POST'});status.textContent='この声を準備しています…';while(ref.state==='preparing'){await new Promise(r=>setTimeout(r,500));ref=await api('/api/v2/voices/'+voice.id+'/preparation');}status.textContent=ref.state==='ready'?'準備完了。発話画面でOmniVoiceを選べます。':ref.message;}catch(e){status.textContent=e.message;}finally{button.disabled=false;}};
+  const automatic=document.createElement('button');automatic.textContent='区間と文字を自動入力';automatic.className='secondary';
+  const transcribe=document.createElement('button');transcribe.textContent='この区間を文字起こし';transcribe.className='secondary';
+  const preview=document.createElement('button');preview.textContent='選択区間だけ試聴';preview.className='secondary';
+  const help=document.createElement('p');help.className='small';help.textContent='標準の声は参照設定を事前入力します。その他の録音は「区間と文字を自動入力」で下書きを作れます。音声はPC内で処理します。選択区間を試聴し、認識間違いがあれば直して保存してください。';
+  const actions=document.createElement('div');actions.className='actions';actions.append(automatic,transcribe,preview);
+  details.append(help,language,actions,startLabel,endLabel,transcript,button,status);
+  let loaded=false, digest=null, busy=false;
+  const base='/api/v2/voices/'+encodeURIComponent(voice.id);
+  const fill=ref=>{start.value=ref.clip_start_ms/1000;end.value=ref.clip_end_ms==null?Math.min(10,ref.duration_seconds || 10):ref.clip_end_ms/1000;transcript.value=ref.reference_transcript;language.value=ref.reference_language;digest=ref.wav_sha256 || null;};
+  const disable=value=>{busy=value;for(const el of [automatic,transcribe,preview,button,start,end,language,transcript])el.disabled=value;};
+  const initialize=async()=>{
+    if(loaded)return;
+    const ref=voice.kind==='design'?await api(base+'/standard-reference',{method:'POST'}):await api(base+'/reference');
+    fill(ref);loaded=true;
+    status.textContent=ref.reference_audio_changed?'録音が変更されています。自動入力をやり直してください。':ref.source==='standard'?'標準の参照設定を入力済みです。そのまま保存して準備できます。':ref.reference_transcript?'保存済みの設定です。自動入力を行っても、保存するまで元の設定を保持します。':'自動入力で区間と文字を用意できます。';
+  };
+  details.ontoggle=async()=>{if(!details.open || loaded || busy)return;disable(true);try{await initialize();}catch(e){status.textContent=e.message;}finally{disable(false);}};
+  const autoFill=async(selected)=>{
+    if(busy)return;disable(true);
+    try{
+      await initialize();
+      const payload={reference_language:language.value};
+      if(selected){payload.clip_start_ms=Math.round(Number(start.value)*1000);payload.clip_end_ms=Math.round(Number(end.value)*1000);}
+      status.textContent='PC内で文字起こししています…（初回はモデルの読み込みに時間がかかります）';
+      let result=await api(base+'/auto-reference',jsonRequest('POST',payload));
+      while(result.state==='transcribing'){await new Promise(r=>setTimeout(r,700));result=await api(base+'/auto-reference');}
+      if(result.state!=='ready')throw new Error(result.message || '自動入力に失敗しました');
+      fill(result.reference);status.textContent='下書きを入力しました。選択区間を試聴し、文字を確認してから「参照を保存して準備」を押してください。';
+    }catch(e){status.textContent=e.message;}finally{disable(false);}
+  };
+  automatic.onclick=()=>autoFill(false);transcribe.onclick=()=>autoFill(true);
+  start.oninput=end.oninput=()=>{status.textContent='区間を変更しました。「この区間を文字起こし」で、文字も新しい区間に合わせてください。';};
+  preview.onclick=async()=>{
+    if(busy)return;
+    stop();const token=generation;
+    try{
+      const from=Number(start.value),to=Number(end.value);
+      if(!Number.isFinite(from) || !Number.isFinite(to) || from<0 || to<=from)throw new Error('開始と終了を確認してください');
+      const response=await fetch('/api/voices/'+encodeURIComponent(voice.id)+'/audio');if(!response.ok)throw new Error('参照音声を読み込めません');
+      await audioContext();const audio=await ctx.decodeAudioData(await response.arrayBuffer());
+      if(to>audio.duration+.001)throw new Error('終了は録音の長さ以内にしてください');
+      const first=Math.floor(from*audio.sampleRate),last=Math.min(audio.length,Math.floor(to*audio.sampleRate));
+      const clip=ctx.createBuffer(audio.numberOfChannels,last-first,audio.sampleRate);
+      for(let ch=0;ch<audio.numberOfChannels;ch++)clip.copyToChannel(audio.getChannelData(ch).subarray(first,last),ch);
+      if(token!==generation)return;play(clip);status.textContent='選択区間の試聴を開始しました。Escで停止できます。';
+    }catch(e){status.textContent=e.message;}
+  };
+  button.onclick=async()=>{if(busy)return;disable(true);try{await api(base+'/reference',jsonRequest('PUT',{reference_transcript:transcript.value,reference_language:language.value,clip_start_ms:Math.round(Number(start.value)*1000),clip_end_ms:Math.round(Number(end.value)*1000),wav_sha256:digest}));let ref=await api(base+'/prepare',{method:'POST'});status.textContent='この声を準備しています…';while(ref.state==='preparing'){await new Promise(r=>setTimeout(r,500));ref=await api(base+'/preparation');}status.textContent=ref.state==='ready'?'準備完了。発話画面でOmniVoiceを選べます。':ref.message;await updateVoiceNotice();updateStatus();}catch(e){status.textContent=e.message;}finally{disable(false);}};
   return details;
 }
 $('dictionary-preview-button').onclick=async()=>{try{const result=await api('/api/v2/reading-preview',jsonRequest('POST',{text:$('dictionary-example').value,mode:'ja',use_dictionary:true,draft_entries:rowsValue('dictionary-editor')}));$('dictionary-preview-result').textContent='読み：'+result.speech_text+' ／ 適用：'+result.applied_entries.map(e=>e.surface+'→'+e.reading).join('、');}catch(e){$('dictionary-preview-result').textContent=e.message;}};

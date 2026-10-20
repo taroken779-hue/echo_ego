@@ -14,6 +14,7 @@ import traceback
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from configuration import RuntimeConfig, data_dir
+from speech.reference import select_clip
 
 CONFIG = RuntimeConfig.model_validate_json(os.environ["ECHO_WORKER_CONFIG"])
 ENGINE = sys.argv[1]
@@ -153,6 +154,41 @@ def synthesize(p):
     return audio_result(values,model.sampling_rate,started,reference_ms)
 
 
+def transcribe_reference(p):
+    # ASR stays on CPU and is released after use. Never download during a request.
+    import gc
+    import soundfile as sf
+    import torch
+    import torchaudio
+    from transformers import pipeline
+    torch.set_num_threads(4)
+    path = Path(p["reference_path"]).resolve()
+    allowed = [ROOT / "voices", data_dir() / "design-voices", ROOT / CONFIG.presets_dir]
+    if not any(path.is_relative_to(folder.resolve()) for folder in allowed):
+        raise ValueError("参照音声の場所が無効です")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != p["wav_sha256"]:
+        raise ValueError("録音が変更されました。やり直してください")
+    asr_path = ROOT / CONFIG.asr_model
+    if not (asr_path / "model.safetensors").is_file():
+        raise ValueError("自動文字起こしモデルがありません。setup_omnivoice.batを実行してください")
+    values, sr = sf.read(path, dtype="float32", always_2d=True)
+    clip, start, end = select_clip(values, sr, p.get("clip_start_ms"), p.get("clip_end_ms"))
+    if sr != 16000:
+        clip = torchaudio.functional.resample(torch.from_numpy(clip), sr, 16000).numpy()
+    pipe = pipeline("automatic-speech-recognition", model=str(asr_path), device="cpu", dtype=torch.float32)
+    try:
+        result = pipe({"array":clip,"sampling_rate":16000},
+                      generate_kwargs={"language":p["reference_language"],"task":"transcribe"})
+        text = result["text"].strip()
+        if not text:
+            raise ValueError("文字起こしできませんでした。区間を変えてください")
+        return {"reference_transcript":text,"reference_language":p["reference_language"],
+                "clip_start_ms":start,"clip_end_ms":end,"wav_sha256":p["wav_sha256"]}
+    finally:
+        del pipe
+        gc.collect()
+
+
 def translate(p):
     global translator
     if translator is None:
@@ -190,6 +226,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(size))
             action = self.path.strip("/")
             result = {"load":lambda:load(),"synthesize":lambda:synthesize(payload),"prepare-voice":lambda:prepare(payload),
+                      "transcribe-reference":lambda:transcribe_reference(payload),
                       "translate":lambda:translate(payload),"health":lambda:{"loaded":model is not None}}[action]()
             raw = json.dumps(result,ensure_ascii=False).encode()
             self.send_response(200)

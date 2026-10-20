@@ -13,6 +13,7 @@ class RuntimeConfig(BaseModel):
     omnivoice_python: str = "runtime/omnivoice/.venv/Scripts/python.exe"
     omnivoice_model: str = "runtime/omnivoice/model"
     translation_model: str = "runtime/omnivoice/translation"
+    asr_model: str = "runtime/omnivoice/asr"
     python_path: str = ".venv/Scripts/python.exe"
     source_path: str = "runtime/Irodori-TTS"
     model_path: str = "runtime/models/MF/model.safetensors"

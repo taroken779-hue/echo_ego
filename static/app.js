@@ -92,8 +92,8 @@ async function updateVoiceNotice() {
   try {
     const ref = await api('/api/v2/voices/' + encodeURIComponent(voice) + '/reference');
     if ($('voice').value !== voice || selectedEngine() !== engine) return;
-    omniReferenceReady = Boolean(ref.reference_transcript?.trim()) && ref.clip_end_ms != null && ref.clip_end_ms - ref.clip_start_ms >= 3000 && ref.clip_end_ms - ref.clip_start_ms <= 10000 && ref.clip_end_ms <= ref.duration_seconds * 1000 + 1;
-    notice.textContent = omniReferenceReady ? 'OmniVoice用の参照設定あり。参照区間と文字起こしが一致しているか「声」ページで確認できます。' : 'この声はOmniVoice用の設定が必要です。「声」ページで3〜10秒の参照区間と、その区間の正確な文字起こしを保存してください。';
+    omniReferenceReady = !ref.reference_audio_changed && Boolean(ref.reference_transcript?.trim()) && ref.clip_end_ms != null && ref.clip_end_ms - ref.clip_start_ms >= 3000 && ref.clip_end_ms - ref.clip_start_ms <= 10000 && ref.clip_end_ms <= ref.duration_seconds * 1000 + 1;
+    notice.textContent = omniReferenceReady ? 'OmniVoice用の参照設定あり。参照区間と文字起こしが一致しているか「声」ページで確認できます。' : 'この声はOmniVoice用の設定が必要です。「声」ページの「区間と文字を自動入力」で下書きを作り、確認して保存してください。';
   } catch { if ($('voice').value === voice) notice.textContent = 'OmniVoice用の設定を確認できません。「声」ページを確認してください。'; }
 }
 async function audioContext() {

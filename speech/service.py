@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict
 from reading_dictionary import apply, safe_text
 from speech.jobs import Jobs, JobError
+from speech.reference import DESIGN_TRANSCRIPT
 
 
 class SpeechRequest(BaseModel):
@@ -30,6 +31,13 @@ class VoiceReference(BaseModel):
     reference_language: Literal["ja","en"] = "ja"
     clip_start_ms: int = Field(default=0,ge=0,le=27000)
     clip_end_ms: int = Field(ge=3000,le=30000)
+    wav_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class AutoReference(BaseModel):
+    reference_language: Literal["ja", "en"] = "ja"
+    clip_start_ms: int | None = Field(default=None, ge=0, le=27000)
+    clip_end_ms: int | None = Field(default=None, ge=3000, le=30000)
 
 
 class SpeechService:
@@ -37,6 +45,7 @@ class SpeechService:
         self.store, self.dictionary, self.manager, self.resolve_voice = store,dictionary,manager,resolve_voice
         self.preparations = {}
         self.preparation_lock = threading.Lock()
+        self.transcriptions = {}
         with store.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS voice_profiles (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, payload TEXT NOT NULL)")
         self.jobs = Jobs(self.execute)
@@ -44,27 +53,79 @@ class SpeechService:
     def profile(self, voice):
         with self.store.connect() as db:
             row = db.execute("SELECT revision,payload FROM voice_profiles WHERE id=?",(voice,)).fetchone()
-        return {"revision":row[0],**json.loads(row[1])} if row else {"revision":0,"reference_transcript":"","reference_language":"ja","clip_start_ms":0,"clip_end_ms":None}
+        if row:
+            return {"revision":row[0],**json.loads(row[1])}
+        # Full generated utterance only: never pair the full text with a truncated WAV.
+        if voice.startswith("design:"):
+            import soundfile as sf
+            path = self.resolve_voice(voice)
+            if path.is_file() and 3 <= sf.info(path).duration <= 10:
+                return {"revision":0,"reference_transcript":DESIGN_TRANSCRIPT,"reference_language":"ja",
+                        "clip_start_ms":0,"clip_end_ms":int(sf.info(path).duration*1000),
+                        "wav_sha256":hashlib.sha256(path.read_bytes()).hexdigest(),"source":"standard"}
+        return {"revision":0,"reference_transcript":"","reference_language":"ja","clip_start_ms":0,"clip_end_ms":None}
 
     def save_profile(self, voice, value):
         import soundfile as sf
         path = self.resolve_voice(voice)
         info = sf.info(path)
+        if value.wav_sha256 and hashlib.sha256(path.read_bytes()).hexdigest() != value.wav_sha256:
+            raise ValueError("録音が変更されました。自動入力をやり直してください")
         if not 3000 <= value.clip_end_ms-value.clip_start_ms <= 10000 or value.clip_end_ms > info.duration*1000+1:
             raise ValueError("録音内の3〜10秒の区間と、その区間に合う文字起こしを指定してください")
         safe_text(value.reference_transcript)
+        value = value.model_copy(update={"wav_sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT revision FROM voice_profiles WHERE id=?",(voice,)).fetchone()
             db.execute("INSERT OR REPLACE INTO voice_profiles VALUES (?,?,?)",(voice,row[0]+1 if row else 1,value.model_dump_json()))
         return self.profile(voice)
 
+    def transcribe_reference(self, voice, value):
+        path = self.resolve_voice(voice)
+        if not path.is_file():
+            raise ValueError("録音がありません")
+        ref = {"reference_path":str(path),"wav_sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
+        if (value.clip_start_ms is None) != (value.clip_end_ms is None):
+            raise ValueError("開始と終了を両方指定してください")
+        payload = {"reference_path":ref["reference_path"],"wav_sha256":ref["wav_sha256"],**value.model_dump()}
+        key = hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
+        with self.preparation_lock:
+            old = self.transcriptions.get(voice,{})
+            if old.get("state") == "transcribing":
+                if old.get("key") != key:
+                    raise JobError(409,"この声は別の区間で文字起こし中です。完了してから実行してください")
+                return dict(old)
+            # Bound request work across voices; shared TTS execution lock is still used.
+            if any(item.get("state") == "transcribing" for item in self.transcriptions.values()):
+                raise JobError(429,"別の声を自動入力中です。完了してから実行してください")
+            item = {"state":"transcribing","key":key}
+            self.transcriptions[voice] = item
+        def run():
+            try:
+                with self.manager.lock:
+                    result = self.manager.workers["omnivoice"].call("transcribe-reference",payload,timeout=300)
+                    if hashlib.sha256(path.read_bytes()).hexdigest() != payload["wav_sha256"]:
+                        raise ValueError("録音が変更されました。自動入力をやり直してください")
+                    # Validate the returned draft without writing it into the saved profile.
+                    draft = VoiceReference.model_validate(result).model_dump()
+                    safe_text(draft["reference_transcript"])
+                item.update(state="ready",reference=draft)
+            except Exception as exc:
+                message = str(exc) if isinstance(exc,ValueError) else "自動文字起こしに失敗しました。モデルの導入・録音を確認して再実行してください"
+                item.update(state="failed",message=message)
+        threading.Thread(target=run,daemon=True).start()
+        return dict(item)
+
     def reference(self, voice):
         path = self.resolve_voice(voice)
         if not path.exists():
             raise JobError(503,"この声は未作成です。声の管理で試聴してから準備してください")
         profile = self.profile(voice)
-        return {"voice_id":voice,"reference_path":str(path),"wav_sha256":hashlib.sha256(path.read_bytes()).hexdigest(),**profile}
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if profile.get("wav_sha256") and profile["wav_sha256"] != digest:
+            raise ValueError("録音が変更されました。参照設定を作り直してください")
+        return {**profile,"voice_id":voice,"reference_path":str(path),"wav_sha256":digest}
 
     def prepare_voice(self, voice):
         ref = self.reference(voice)

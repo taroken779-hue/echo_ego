@@ -22,7 +22,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from reading_dictionary import Dictionary, Conflict, apply as apply_reading
 from speech.runtime import RuntimeManager
-from speech.service import SpeechService, SpeechRequest, VoiceReference
+from speech.service import SpeechService, SpeechRequest, VoiceReference, AutoReference
+from speech.reference import DESIGN_TRANSCRIPT
 from speech.jobs import JobError
 import base64
 from configuration import load_config, save_config, resolve, data_dir, RuntimeConfig
@@ -78,7 +79,7 @@ def ensure_design(voice):
         with gate:
             manager.activate("irodori")
             result = manager.workers["irodori"].call("synthesize", {
-                "text": "こんにちは。お話できてうれしいです。どうぞよろしくお願いします。",
+                "text": DESIGN_TRANSCRIPT,
                 "design_caption": DESIGNS[name][1], "seed": 20261004 + list(DESIGNS).index(name)})
             path.write_bytes(base64.b64decode(result["audio"]))
     return path
@@ -138,7 +139,7 @@ async def local_only(request: Request, call_next):
 
 @app.get("/")
 def index():
-    return FileResponse(ROOT / "static" / "index.html")
+    return FileResponse(ROOT / "static" / "index.html",headers={"Cache-Control":"no-store"})
 
 
 @app.get("/api/status")
@@ -508,13 +509,41 @@ def cancel_client(client_id: str):
 @app.get("/api/v2/voices/{voice_id}/reference")
 def voice_reference(voice_id: str):
     path = resolve_voice(voice_id)
-    return {**service.profile(voice_id),"duration_seconds":sf.info(path).duration if path.exists() else None}
+    profile = service.profile(voice_id)
+    changed = bool(profile.get("wav_sha256") and path.exists() and
+                   profile["wav_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest())
+    return {**profile,"duration_seconds":sf.info(path).duration if path.exists() else None,
+            "reference_audio_changed":changed}
 
 
 @app.put("/api/v2/voices/{voice_id}/reference")
 def save_reference(voice_id: str,value: VoiceReference):
     try: return service.save_profile(voice_id,value)
     except ValueError as exc: raise HTTPException(422,str(exc))
+
+
+@app.post("/api/v2/voices/{voice_id}/auto-reference",status_code=202)
+def auto_reference(voice_id: str,value: AutoReference):
+    try:
+        ensure_design(voice_id)
+        return service.transcribe_reference(voice_id,value)
+    except ValueError as exc:
+        if isinstance(exc,JobError): raise
+        raise HTTPException(422,str(exc))
+
+
+@app.get("/api/v2/voices/{voice_id}/auto-reference")
+def auto_reference_status(voice_id: str):
+    resolve_voice(voice_id)
+    return service.transcriptions.get(voice_id,{"state":"idle"})
+
+
+@app.post("/api/v2/voices/{voice_id}/standard-reference")
+def standard_reference(voice_id: str):
+    if voice_id not in {"design:"+name for name in DESIGNS}:
+        raise HTTPException(400,"標準の声を選択してください")
+    ensure_design(voice_id)
+    return voice_reference(voice_id)
 
 
 @app.post("/api/v2/voices/{voice_id}/prepare",status_code=202)
