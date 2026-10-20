@@ -9,3 +9,7 @@ Echo Ego's LICENSE covers its own application source. Models, upstream software 
 - Echo Ego icons and gear decoration are original SVG assets. Palette inspiration: https://tarokenkoubou.com/ . No site logo, font files, photographs or third-party recordings are bundled.
 
 Use only recordings you own or have permission to use. Consult the Irodori model card's usage guidance. Voice design presets are generated locally and are not representations of specific people.
+
+## OmniVoice追加機能
+
+OmniVoiceコード（k2-fsa/OmniVoice）はApache-2.0、公開モデル重みは提供元モデルカードでCC-BY-NCとされます。音声Codecはeustlb/higgs-audio-v2-tokenizer、翻訳モデルはHelsinki-NLP/opus-mt-ja-en（Apache-2.0）を別途取得します。実際の取得revisionはローカルmanifestへ記録し、各モデルのLICENSE/モデルカードを同梱された取得物から確認してください。モデル・Codec・登録音声はこのソース配布に含めません。

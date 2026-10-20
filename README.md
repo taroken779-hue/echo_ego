@@ -2,6 +2,8 @@
 
 日本語の短文を入力して、Irodori-TTSの声で話すWindowsローカルアプリ。自分の声の録音・登録、発話キュー、生成済み定型句、読み辞書、履歴保存に対応します。
 
+OmniVoiceによる日本語・英語発話、日本語入力からのローカル日英翻訳、読み辞書のプレビューにも対応します。追加導入は`setup_omnivoice.bat`。声の管理で3〜10秒の参照区間と正確な文字起こしを保存して準備し、発話画面でエンジンを選択してください。[操作ガイド](docs/OMNIVOICE_GUIDE.md) / [実装・検証結果](docs/OMNIVOICE_IMPLEMENTATION.md)。日本語の初期標準はIrodoriを維持します。
+
 ## 導入・起動
 
 1. Git for Windowsとuvをインストールします。

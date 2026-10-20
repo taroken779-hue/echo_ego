@@ -1,5 +1,8 @@
+let preferencesEtag = null, dictionaryState = null;
 async function api(path, options = {}) {
+  if (path === '/api/preferences' && options.method === 'PUT' && preferencesEtag) options.headers = {...options.headers,'If-Match':preferencesEtag};
   const r = await fetch(path, options);
+  if (path === '/api/preferences' && r.ok && r.headers.get('ETag')) preferencesEtag = r.headers.get('ETag');
   if (!r.ok) { let err; try { err = await r.json(); } catch {} throw Error(typeof err?.detail === 'string' ? err.detail : '入力内容または接続を確認してください'); }
   return r.json();
 }
@@ -16,7 +19,7 @@ async function persistItem(item) {
   if (!preferences.history_enabled || !item.blob) return;
   if (item.deleteTask) { await item.deleteTask; item.deleteTask = null; }
   const body = new FormData();
-  body.append('metadata', JSON.stringify({id:item.id,text:item.text,voice:item.voice,generatedAt:item.generatedAt,timing:item.timing}));
+  body.append('metadata', JSON.stringify({id:item.id,text:item.text,voice:item.voice,generatedAt:item.generatedAt,timing:item.timing,speech_text:item.speech_text,translated_text:item.translated_text,engine:item.engine,reading_revision:item.reading_revision,model_identity:item.model_identity,voice_revision:item.voice_revision}));
   body.append('file', item.blob, 'audio.wav');
   try { await api('/api/history', {method:'POST',body}); if (item.deleted) await api('/api/history/' + item.id, {method:'DELETE'}); }
   catch (e) { showHistoryError(e); }
@@ -27,7 +30,7 @@ function renderQueue() {
     const row = document.createElement('div'); row.className = 'queue-row';
     const label = document.createElement('span'); label.textContent = (job === activeJob ? '生成中：' : '待ち：') + job.payload.text;
     row.append(label);
-    if (job !== activeJob) { const b = document.createElement('button'); b.className = 'textbutton'; b.textContent = '取消'; b.onclick = () => { queue = queue.filter(v => v.id !== job.id); prepared = prepared.filter(v => v.id !== job.id); updateStatus(); }; row.append(b); }
+    if (job !== activeJob) { const b = document.createElement('button'); b.className = 'textbutton'; b.textContent = '取消'; b.onclick = () => { job.cancelled = true; if (job.serverId) fetch('/api/v2/speech-jobs/'+job.serverId,{method:'DELETE'}).catch(()=>{}); queue = queue.filter(v => v.id !== job.id); prepared = prepared.filter(v => v.id !== job.id); updateStatus(); }; row.append(b); }
     $('queue-list').append(row);
   }
 }
@@ -54,10 +57,10 @@ function renderVoices() {
         play(buffer); $('voice-notice').textContent = '試聴を開始しました。Escで停止できます。';
       } catch(e) { if (token === generation) $('voice-notice').textContent = e.message; }
     };
-    const choose = document.createElement('button'); choose.textContent = 'この声を使う'; choose.className = 'secondary'; choose.onclick = () => { $('voice').value = voice.id; rememberSpeechSettings(); location.hash = 'speak'; };
+    const choose = document.createElement('button'); choose.textContent = voice.favorite ? 'この声を使う' : 'お気に入りにして使う'; choose.className = 'secondary'; choose.onclick = async () => { try { if (!voice.favorite) await api('/api/voices/' + voice.id, jsonRequest('PATCH',{name:voice.name,favorite:true})); await refresh(); $('voice').value = voice.id; await updateVoiceNotice(); updateStatus(); await rememberSpeechSettings(); location.hash = 'speak'; } catch(e) { $('voice-notice').textContent = e.message; } };
     actions.append(save, audition, choose);
     if (voice.kind === 'custom') { const remove = document.createElement('button'); remove.textContent = '削除'; remove.className = 'danger-outline'; remove.onclick = async () => { if (!confirm('登録した声と前処理キャッシュを削除します。発話履歴は別に削除してください。')) return; try { await api('/api/voices/' + voice.id, {method:'DELETE'}); await refresh(); $('voice-notice').textContent = '登録した声を削除しました。'; } catch(e) { $('voice-notice').textContent = e.message; } }; actions.append(remove); }
-    row.append(name,label,actions); $('voice-list').append(row);
+    row.append(name,label,actions,referenceEditor(voice)); $('voice-list').append(row);
   }
 }
 function triggerPhrase(index) {
@@ -78,19 +81,26 @@ function addPhrase(phrase = {id:crypto.randomUUID(),label:'',text:''}) {
   if ($('phrase-editor').children.length >= 9) return;
   const row = editorRow([['label',phrase.label,'ボタン名',32],['text',phrase.text,'発話する文章',160]],$('phrase-editor'),true); row.dataset.id = phrase.id;
 }
-function addReading(reading = {surface:'',reading:''}) {
+function addReading(reading = {id:crypto.randomUUID(),surface:'',reading:'',enabled:true,match_mode:'substring',note:''}) {
   if ($('dictionary-editor').children.length >= 100) return;
-  editorRow([['surface',reading.surface,'単語',40],['reading',reading.reading,'読み',80]],$('dictionary-editor'));
+  const row = editorRow([['surface',reading.surface,'単語',40],['reading',reading.reading,'読み（かな）',80],['note',reading.note || '', 'メモ',100]],$('dictionary-editor'));
+  row.dataset.id = reading.id;
+  const enabled = document.createElement('input'); enabled.type='checkbox';enabled.checked=reading.enabled !== false;enabled.dataset.field='enabled';
+  const label = document.createElement('label');label.className='check-label';label.append(enabled,document.createTextNode('有効'));
+  const scope = document.createElement('select');scope.dataset.field='match_mode';scope.setAttribute('aria-label','適用範囲');scope.append(new Option('文中の一致','substring'),new Option('文全体の一致','whole_text'));scope.value=reading.match_mode || 'substring';row.append(label,scope);
 }
-function rowsValue(id) { return [...$(id).children].map(row => { const value = {}; row.querySelectorAll('[data-field]').forEach(input => value[input.dataset.field] = input.value); if(row.dataset.id) value.id = row.dataset.id; return value; }); }
+function rowsValue(id) { return [...$(id).children].map(row => { const value={};row.querySelectorAll('[data-field]').forEach(input=>value[input.dataset.field]=input.type==='checkbox' ? input.checked : input.value);if(row.dataset.id)value.id=row.dataset.id;return value; }); }
 async function rememberSpeechSettings() {
-  preferences.voice = $('voice').value; preferences.speed = Number($('speed').value); preferences.steps = Number($('steps').value);
+  preferences.mode = $('speech-mode').value; if (preferences.mode === 'ja') preferences.japanese_engine = $('speech-engine').value; preferences.omnivoice_steps = Number($('omni-steps').value);
+  if ($('voice').value) preferences.voice = $('voice').value; preferences.speed = Number($('speed').value); preferences.steps = Number($('steps').value);
   try { await api('/api/preferences', jsonRequest('PUT',preferences)); } catch(e) { $('message').textContent = '設定を保存できませんでした：' + e.message; }
 }
 function historyPolicy() { $('history-policy').textContent = preferences.history_enabled ? `音声込みでPC内に保存。最大${preferences.history_count}件・${preferences.history_days}日・${preferences.history_mb}MB。日時は日本時間です。` : '履歴のディスク保存はオフです。このタブ内に最大10件保持し、再読み込みで消えます。日時は日本時間です。'; }
 async function saveSettings() {
-  const next = {...preferences, volume:Number($('volume').value), output_device:$('output-device').value, history_enabled:$('history-enabled').checked, history_count:Number($('history-limit').value),history_days:Number($('history-days').value),history_mb:Number($('history-mb').value), phrases:rowsValue('phrase-editor'), dictionary:rowsValue('dictionary-editor')};
-  try { preferences = await api('/api/preferences',jsonRequest('PUT',next)); renderPhrases(); historyPolicy(); if (gain) gain.gain.value = preferences.volume; if(ctx?.setSinkId) await ctx.setSinkId(preferences.output_device); $('settings-notice').textContent = '設定を保存しました。'; return true; }
+  const next = {...preferences, volume:Number($('volume').value), output_device:$('output-device').value, history_enabled:$('history-enabled').checked, history_count:Number($('history-limit').value),history_days:Number($('history-days').value),history_mb:Number($('history-mb').value), phrases:rowsValue('phrase-editor'), dictionary:preferences.dictionary};
+  try { dictionaryState = await api('/api/v2/reading-dictionary',jsonRequest('PUT',{expected_revision:dictionaryState.revision,entries:rowsValue('dictionary-editor')}));
+    const latest = await api('/api/preferences'); next.dictionary = latest.dictionary;
+    preferences = await api('/api/preferences',jsonRequest('PUT',next)); renderPhrases(); historyPolicy(); if (gain) gain.gain.value = preferences.volume; if(ctx?.setSinkId) await ctx.setSinkId(preferences.output_device); $('settings-notice').textContent = '設定を保存しました。'; return true; }
   catch(e) { $('settings-notice').textContent = e.message; return false; }
 }
 let preparing = false;
@@ -102,7 +112,8 @@ async function preparePhrases() {
     for (const [index,phrase] of preferences.phrases.entries()) {
       if (!preparing || token !== generation || localBusy || playing || queue.length) break;
       $('cache-notice').textContent = `準備中 ${index + 1}/${preferences.phrases.length}：${phrase.label}`;
-      await apiAudio('/api/speech',{text:phrase.text,voice:$('voice').value,steps:Number($('steps').value),speed:Number($('speed').value),use_cache:true});
+      const engine = selectedEngine(); const job = await api('/api/v2/speech-jobs',jsonRequest('POST',{client_id:clientId,request_id:crypto.randomUUID(),text:phrase.text,voice_id:$('voice').value,mode:$('speech-mode').value,engine,speed:Number($('speed').value),engine_settings:engine==='irodori'?{steps:Number($('steps').value)}:{num_step:Number($('omni-steps').value)},use_phrase_cache:true}));
+      let result=job;while(!['ready','failed','cancelled'].includes(result.state)){if(!preparing || token!==generation){await api('/api/v2/speech-jobs/'+job.id,{method:'DELETE'});break;}await new Promise(r=>setTimeout(r,250));result=await api('/api/v2/speech-jobs/'+job.id);}if(result.state==='failed')throw Error(result.error.message);
     }
     $('cache-notice').textContent = '準備を終了しました。生成済みの定型句は即座に再生できます。';
   } catch(e) { $('cache-notice').textContent = e.message; }
@@ -148,6 +159,7 @@ $('mic-devices').onclick=reportTo('record-status',microphoneList);
 $('record-save').onclick=reportTo('record-status',async()=>{if(!recordBlob)return;const body=new FormData();body.append('file',recordBlob,'recording.wav');const voice=await api('/api/voices',{method:'POST',body});await refresh();$('voice').value=voice.id;await rememberSpeechSettings();$('record-status').textContent='声を登録しました。';$('record-save').hidden=true;});
 $('save-settings').onclick=saveSettings;$('phrase-add').onclick=()=>addPhrase();$('dictionary-add').onclick=()=>addReading();$('phrase-prepare').onclick=preparePhrases;
 $('cache-clear').onclick=reportTo('cache-notice',async()=>{await api('/api/cache',{method:'DELETE'});$('cache-notice').textContent='定型句の音声を削除しました。';});
+$('voice').addEventListener('change', async () => { operationError = ''; omniReferenceReady = false; updateStatus(); await updateVoiceNotice(); updateStatus(); });
 ['voice','speed','steps'].forEach(id=>$(id).addEventListener('change',rememberSpeechSettings));
 $('volume').oninput=()=>{if(gain)gain.gain.value=Number($('volume').value);};
 $('output-devices').onclick=reportTo('output-notice',async()=>{await audioContext();if(!ctx.setSinkId){$('output-notice').textContent='このブラウザーでは出力先選択に対応していません。OSのサウンド設定を使ってください。';return;}let access;if(navigator.mediaDevices.selectAudioOutput){await navigator.mediaDevices.selectAudioOutput();}else{access=await navigator.mediaDevices.getUserMedia({audio:true});access.getTracks().forEach(t=>t.stop());}const devices=await navigator.mediaDevices.enumerateDevices();$('output-device').replaceChildren(new Option('標準の出力先',''));devices.filter(d=>d.kind==='audiooutput').forEach(d=>$('output-device').append(new Option(d.label,d.deviceId)));});
@@ -158,11 +170,27 @@ $('shutdown').onclick=reportTo('runtime-notice',async()=>{stop();await api('/api
 document.querySelectorAll('[data-manual]').forEach(button=>button.onclick=()=>loadManual(button.dataset.manual));
 window.addEventListener('beforeunload',()=>{stream?.getTracks().forEach(track=>track.stop());});
 async function initializeUI() {
-  try { preferences=await api('/api/preferences');$('speed').value=String(preferences.speed);$('steps').value=String(preferences.steps);$('volume').value=preferences.volume;$('history-enabled').checked=preferences.history_enabled;$('history-limit').value=preferences.history_count;$('history-days').value=preferences.history_days;$('history-mb').value=preferences.history_mb;if(preferences.output_device)$('output-device').append(new Option('保存した出力先',preferences.output_device));$('output-device').value=preferences.output_device;
-    preferences.phrases.forEach(addPhrase);preferences.dictionary.forEach(addReading);renderPhrases();historyPolicy();
+  try { preferences=await api('/api/preferences');$('speech-mode').value=preferences.mode || 'ja';$('speech-engine').value=preferences.mode==='ja_to_en'?'omnivoice':preferences.japanese_engine || 'irodori';$('omni-steps').value=String(preferences.omnivoice_steps || 32);$('speed').value=String(preferences.speed);$('steps').value=String(preferences.steps);$('volume').value=preferences.volume;$('history-enabled').checked=preferences.history_enabled;$('history-limit').value=preferences.history_count;$('history-days').value=preferences.history_days;$('history-mb').value=preferences.history_mb;if(preferences.output_device)$('output-device').append(new Option('保存した出力先',preferences.output_device));$('output-device').value=preferences.output_device;
+    preferences.phrases.forEach(addPhrase);dictionaryState=await api('/api/v2/reading-dictionary');dictionaryState.entries.forEach(addReading);renderPhrases();historyPolicy();
     if(preferences.history_enabled)history.push(...await api('/api/history'));
     await loadConfigUI();await loadManual('user');
   }catch(e){$('settings-notice').textContent=e.message;}
   showView();renderHistory();await refresh();setInterval(refresh,2000);
 }
 initializeUI();
+
+function referenceEditor(voice) {
+  const details = document.createElement('details');const summary=document.createElement('summary');summary.textContent='OmniVoice用の声を準備（Irodori-TTSとは別設定）';details.append(summary);
+  const transcript=document.createElement('textarea');transcript.setAttribute('aria-label','参照区間の文字起こし');transcript.placeholder='選んだ区間で話している内容を正確に入力';
+  const start=document.createElement('input'),end=document.createElement('input');for(const input of [start,end]){input.type='number';input.min='0';input.step='0.1';}
+  const startLabel=document.createElement('label');startLabel.textContent='開始（秒）';startLabel.append(start);const endLabel=document.createElement('label');endLabel.textContent='終了（秒・3〜10秒の区間）';endLabel.append(end);
+  const language=document.createElement('select');language.setAttribute('aria-label','録音の言語');language.append(new Option('日本語の録音','ja'),new Option('英語の録音','en'));
+  const button=document.createElement('button');button.textContent='参照を保存して準備';button.className='secondary';const status=document.createElement('p');status.setAttribute('role','status');
+  const help=document.createElement('p');help.className='small';help.textContent='元の録音は両エンジンで共用します。OmniVoiceは選択区間と文字起こしを追加で使います。録音全体ではなく、指定した区間だけの言葉を正確に入力してください。';details.append(help,startLabel,endLabel,language,transcript,button,status);let loaded=false;
+  details.ontoggle=async()=>{if(!details.open || loaded)return;try{const ref=await api('/api/v2/voices/'+voice.id+'/reference');start.value=ref.clip_start_ms/1000;end.value=ref.clip_end_ms==null?Math.min(10,ref.duration_seconds || 10):ref.clip_end_ms/1000;transcript.value=ref.reference_transcript;language.value=ref.reference_language;loaded=true;}catch(e){status.textContent=e.message;}};
+  button.onclick=async()=>{button.disabled=true;try{await api('/api/v2/voices/'+voice.id+'/reference',jsonRequest('PUT',{reference_transcript:transcript.value,reference_language:language.value,clip_start_ms:Math.round(Number(start.value)*1000),clip_end_ms:Math.round(Number(end.value)*1000)}));let ref=await api('/api/v2/voices/'+voice.id+'/prepare',{method:'POST'});status.textContent='この声を準備しています…';while(ref.state==='preparing'){await new Promise(r=>setTimeout(r,500));ref=await api('/api/v2/voices/'+voice.id+'/preparation');}status.textContent=ref.state==='ready'?'準備完了。発話画面でOmniVoiceを選べます。':ref.message;}catch(e){status.textContent=e.message;}finally{button.disabled=false;}};
+  return details;
+}
+$('dictionary-preview-button').onclick=async()=>{try{const result=await api('/api/v2/reading-preview',jsonRequest('POST',{text:$('dictionary-example').value,mode:'ja',use_dictionary:true,draft_entries:rowsValue('dictionary-editor')}));$('dictionary-preview-result').textContent='読み：'+result.speech_text+' ／ 適用：'+result.applied_entries.map(e=>e.surface+'→'+e.reading).join('、');}catch(e){$('dictionary-preview-result').textContent=e.message;}};
+$('dictionary-audition').textContent='未保存の読みを試聴';
+$('dictionary-audition').onclick=()=>speak(false,{text:$('dictionary-example').value,mode:'ja',draft_entries:rowsValue('dictionary-editor'),audition:true}).catch(e=>$('dictionary-preview-result').textContent=e.message);

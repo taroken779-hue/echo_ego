@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
+from typing import Literal
 
 
 class Phrase(BaseModel):
@@ -20,6 +21,9 @@ class Reading(BaseModel):
 
 
 class Preferences(BaseModel):
+    mode: Literal["ja", "ja_to_en"] = "ja"
+    japanese_engine: Literal["irodori", "omnivoice"] = "irodori"
+    omnivoice_steps: Literal[16, 32] = 32
     voice: str = "design:calm_male"
     speed: float = Field(default=1, ge=.7, le=1.5)
     steps: int = Field(default=4, ge=4, le=8)

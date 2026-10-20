@@ -15,12 +15,16 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-import torch
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from reading_dictionary import Dictionary, Conflict, apply as apply_reading
+from speech.runtime import RuntimeManager
+from speech.service import SpeechService, SpeechRequest, VoiceReference
+from speech.jobs import JobError
+import base64
 from configuration import load_config, save_config, resolve, data_dir, RuntimeConfig
 from store import Store, Preferences
 
@@ -37,8 +41,9 @@ CUSTOM.mkdir(exist_ok=True)
 CACHE.mkdir(parents=True, exist_ok=True)
 MODEL = resolve(config.model_path)
 state = {"phase": "loading", "message": "モデルを読み込んでいます", "busy": False}
-runtime = None
-gate = threading.Lock()
+manager = RuntimeManager(config)
+gate = manager.lock
+dictionary = Dictionary(store)
 
 
 def voices():
@@ -66,70 +71,39 @@ def resolve_voice(voice):
     return path
 
 
-def latent(path):
-    signature = str(path) + str(path.stat().st_mtime_ns) + str(MODEL) + config.codec_repo + "normalize=-16;cap=30"
-    dest = CACHE / (hashlib.sha256(signature.encode()).hexdigest() + ".pt")
-    if not dest.exists():
-        data, sr = sf.read(path, dtype="float32", always_2d=True)
-        data = data[:sr * 30].mean(axis=1)
-        with torch.inference_mode():
-            value = runtime.codec.encode_waveform(torch.from_numpy(data).reshape(1, 1, -1), sample_rate=sr, normalize_db=-16.0, ensure_max=True)
-        torch.save(value.squeeze(0).cpu(), dest)
-    return str(dest)
-
-
-def generate(text, voice, steps, speed):
-    from irodori_tts.inference_runtime import SamplingRequest
-    started = time.perf_counter()
+def ensure_design(voice):
     path = resolve_voice(voice)
     if voice.startswith("design:") and not path.exists():
         name = voice.partition(":")[2]
-        designed = runtime.synthesize(SamplingRequest(text="こんにちは。お話できてうれしいです。どうぞよろしくお願いします。", caption=DESIGNS[name][1], no_ref=True, seed=20261004 + list(DESIGNS).index(name), num_steps=4, max_seconds=15), log_fn=logging.info)
-        sf.write(path, designed.audio.detach().float().cpu().numpy().squeeze(), designed.sample_rate, subtype="PCM_16")
-    ref = latent(path)
-    reference_ms = (time.perf_counter() - started) * 1000
-    result = runtime.synthesize(SamplingRequest(text=text, ref_latent=ref, num_steps=steps, duration_scale=1 / speed, max_seconds=30.0), log_fn=logging.info)
-    samples = result.audio.detach().float().cpu().numpy().squeeze()
-    if samples.ndim != 1 or not len(samples) or not np.isfinite(samples).all():
-        raise RuntimeError("合成結果が無効です")
-    output = io.BytesIO()
-    sf.write(output, samples, result.sample_rate, format="WAV", subtype="PCM_16")
-    signal = np.flatnonzero(np.abs(samples) > max(0.001, float(np.max(np.abs(samples))) * 0.02))
-    first_ms = float(signal[0]) / result.sample_rate * 1000 if len(signal) else -1
-    return output.getvalue(), {
-        "X-Synthesis-Ms": f"{(time.perf_counter() - started) * 1000:.1f}",
-        "X-Reference-Ms": f"{reference_ms:.1f}",
-        "X-First-Signal-Ms": f"{first_ms:.1f}",
-        "X-Audio-Duration-Ms": f"{len(samples) / result.sample_rate * 1000:.1f}",
-        "X-Generated-At": datetime.now(timezone.utc).isoformat(),
-        "Cache-Control": "no-store",
-    }
+        with gate:
+            manager.activate("irodori")
+            result = manager.workers["irodori"].call("synthesize", {
+                "text": "こんにちは。お話できてうれしいです。どうぞよろしくお願いします。",
+                "design_caption": DESIGNS[name][1], "seed": 20261004 + list(DESIGNS).index(name)})
+            path.write_bytes(base64.b64decode(result["audio"]))
+    return path
+
+
+def generate(text, voice, steps, speed):
+    path = ensure_design(voice)
+    manager.activate("irodori")
+    result = manager.workers["irodori"].call("synthesize", {"text":text,"reference_path":str(path),"steps":steps,"speed":speed},timeout=60)
+    return base64.b64decode(result["audio"]),result["headers"]
 
 
 def initialize():
-    global runtime
     try:
-        if runtime is not None:
-            runtime = None
-            import gc
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        from irodori_tts.inference_runtime import InferenceRuntime, RuntimeKey
-        if not MODEL.is_file():
-            raise RuntimeError("MFモデルがありません。scripts/download_model.pyを実行してください")
-        runtime = InferenceRuntime.from_key(RuntimeKey(checkpoint=str(MODEL), codec_repo=config.codec_repo, model_device=config.device, codec_device=config.device, model_precision=config.precision, codec_precision=config.codec_precision, compile_model=config.compile_model))
-        if runtime.model_cfg.flow_parameterization != "meanflow":
-            raise RuntimeError("MFモデルとして認識されませんでした")
-        state.update(phase="warming", message="最初の音声を生成して準備しています")
         with gate:
+            prefs = store.preferences()
+            engine = prefs.japanese_engine if prefs.mode == "ja" else "omnivoice"
+            manager.activate(engine)
             available = {v["id"] for v in voices()}
             voice = store.preferences().voice
-            generate("こんにちは。", voice if voice in available else "design:calm_male", 4, 1.0)
-        state.update(phase="ready", message="準備完了")
-    except Exception as exc:
-        logging.exception("Initialization failed")
-        state.update(phase="error", message=str(exc))
+            if engine == "irodori":
+                generate("こんにちは。",voice if voice in available else "design:calm_male",4,1.)
+        state.update(phase="ready",message="準備完了")
+    except Exception:
+        state.update(phase="error",message="モデルを読み込めません。環境設定を確認してください")
 
 
 @asynccontextmanager
@@ -138,6 +112,8 @@ async def lifespan(app):
     if not config.preload:
         state.update(phase="idle", message="設定からモデルを読み込んでください")
     yield
+    service.jobs.close()
+    manager.close()
     # GPU推論はプロセス終了で解放。稼働中の準備タスクをキャンセルして誤表示しない。
     if task and task.done():
         await task
@@ -167,7 +143,7 @@ def index():
 
 @app.get("/api/status")
 def status():
-    return {"app": "echo-ego-prototype", **state, "model": "Irodori-TTS-v4.1-Small-MF", "precision": config.precision.upper(), "device": config.device, "watermark": bool(runtime and runtime.watermarker.ready), "steps": 4, "voices": voices()}
+    return {"app": "echo-ego-prototype", **state, "model": "Irodori-TTS-v4.1-Small-MF", "precision": config.precision.upper(), "device": config.device, "watermark": bool(manager.status["irodori"].get("watermark")), "steps": 4, "voices": voices()}
 
 
 class Speech(BaseModel):
@@ -179,23 +155,23 @@ class Speech(BaseModel):
 
 
 def spoken_text(text):
-    readings = sorted(store.preferences().dictionary, key=lambda r: -len(r.surface))
-    if not readings:
-        return text
-    mapping = {r.surface: r.reading for r in readings}
-    return re.sub("|".join(re.escape(r.surface) for r in readings), lambda match: mapping[match[0]], text)
+    value = dictionary.get()
+    return apply_reading(text,value["entries"],value["revision"])["speech_text"]
 
 
 def speech_key(payload, text):
     path = resolve_voice(payload.voice)
     voice_version = path.stat().st_mtime_ns if path.exists() else DESIGNS[payload.voice.partition(":")[2]][1]
-    identity = [text, payload.voice, voice_version, payload.steps, payload.speed, str(MODEL), MODEL.stat().st_mtime_ns if MODEL.exists() else 0, config.model_dump(), bool(runtime and runtime.watermarker.ready), "cache-v1"]
+    identity = [text, payload.voice, voice_version, payload.steps, payload.speed, str(MODEL), MODEL.stat().st_mtime_ns if MODEL.exists() else 0, config.model_dump(), bool(manager.status["irodori"].get("watermark")), "cache-v1"]
     return hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 @app.post("/api/speech")
 def speak(payload: Speech):
-    text = spoken_text(payload.text.strip())
+    try:
+        text = spoken_text(payload.text.strip())
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
     if len(text) > 320:
         raise HTTPException(400, "読み辞書の適用後の文が長すぎます")
     if not re.search(r"[\w\u3040-\u30ff\u3400-\u9fff]", text):
@@ -279,11 +255,27 @@ def delete_voice(voice_id: str):
     if not gate.acquire(False):
         raise HTTPException(409, "生成完了後に削除してください")
     try:
+        service.jobs.cancel_voice(voice_id)
+        voice_hash = hashlib.sha256(path.read_bytes()).hexdigest()
         path.unlink()
+        with store.connect() as db:
+            db.execute("DELETE FROM voice_profiles WHERE id=?",(voice_id,))
+        service.preparations.pop(voice_id,None)
+        for metadata in (data_dir()/"voice-prompts"/"omnivoice").glob("*.json"):
+            owners = json.loads(metadata.read_text(encoding="utf-8"))
+            if voice_id in owners:
+                owners.remove(voice_id)
+                if owners:
+                    metadata.write_text(json.dumps(owners),encoding="utf-8")
+                else:
+                    metadata.with_suffix(".pt").unlink(missing_ok=True)
+                    metadata.unlink()
+        manager.workers["omnivoice"].stop()
+        if manager.active == "omnivoice": manager.active = None
         store.remove_voice(voice_id)
         # Latents hold biometric voice features. Clear them with the recording.
-        for item in CACHE.glob("*.pt"):
-            item.unlink()
+        latent_key = hashlib.sha256((voice_hash + config.model_path + config.codec_repo).encode()).hexdigest()
+        (CACHE/(latent_key+".pt")).unlink(missing_ok=True)
     finally:
         gate.release()
     return {"ok": True}
@@ -291,15 +283,34 @@ def delete_voice(voice_id: str):
 
 @app.get("/api/preferences")
 def preferences():
-    return store.preferences()
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        result = store.preferences().model_dump()
+        result["dictionary"] = dictionary.projection(dictionary.get(db))
+        return JSONResponse(result,headers={"ETag":dictionary.etag()})
 
 
 @app.put("/api/preferences")
-def save_preferences(payload: Preferences):
-    if payload.dictionary != store.preferences().dictionary:
-        store.clear_cache()
-    store.save_preferences(payload)
-    return payload
+def save_preferences(payload: Preferences, request: Request):
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        current = dictionary.get(db)
+        incoming = [r.model_dump() for r in payload.dictionary]
+        if incoming != dictionary.projection(current):
+            etag = request.headers.get("if-match")
+            if etag is None: raise HTTPException(428,"設定を再読み込みしてから辞書を保存してください")
+            if etag != dictionary.etag(): raise HTTPException(412,"設定が別の画面で更新されました")
+            old = {e["surface"]:e for e in current["entries"] if e["match_mode"]=="substring"}
+            entries = [{**old.get(r["surface"],{}),**r} for r in incoming]
+            entries += [e for e in current["entries"] if e["match_mode"]=="whole_text"]
+            try: dictionary.update(entries,current["revision"],db)
+            except ValueError as exc: raise HTTPException(422,str(exc))
+        db.execute("INSERT OR REPLACE INTO settings VALUES (1,?)",(payload.model_dump_json(),))
+        if not payload.history_enabled: db.execute("DELETE FROM history")
+    store.prune()
+    result = payload.model_dump()
+    result["dictionary"] = dictionary.projection(dictionary.get())
+    return JSONResponse(result,headers={"ETag":dictionary.etag()})
 
 
 class HistoryItem(BaseModel):
@@ -308,6 +319,12 @@ class HistoryItem(BaseModel):
     voice: str = Field(max_length=100)
     generatedAt: datetime
     timing: dict[str, float]
+    speech_text: str | None = Field(default=None,max_length=640)
+    translated_text: str | None = Field(default=None,max_length=640)
+    engine: str | None = None
+    reading_revision: int | None = None
+    model_identity: dict | None = None
+    voice_revision: int | None = None
 
 
 @app.get("/api/history")
@@ -361,7 +378,8 @@ def clear_phrase_cache():
 
 @app.get("/api/config")
 def runtime_config():
-    return {"config": config.model_dump(), "saved": load_config().model_dump(), "diagnostics": {"cuda": torch.cuda.is_available(), "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "vram_gb": round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 1) if torch.cuda.is_available() else 0, "model_exists": MODEL.is_file(), "source_exists": resolve(config.source_path).is_dir(), "data_dir": str(data_dir())}}
+    hardware = next((value["hardware"] for value in manager.status.values() if value.get("hardware")), {"cuda":False,"gpu":None,"vram_gb":0})
+    return {"config":config.model_dump(),"saved":load_config().model_dump(),"diagnostics":{**hardware,"model_exists":MODEL.is_file(),"source_exists":resolve(config.source_path).is_dir(),"data_dir":str(data_dir())}}
 
 
 @app.put("/api/config")
@@ -382,11 +400,13 @@ def load_runtime():
 @app.post("/api/shutdown")
 def shutdown():
     import signal
+    service.jobs.close()
+    manager.close()
     threading.Timer(.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
     return {"ok": True}
 
 
-MANUALS = {"user": "USER_GUIDE.md", "setup": "SETUP.md", "release": "DISTRIBUTION.md"}
+MANUALS = {"user": "USER_GUIDE.md", "setup": "SETUP.md", "release": "DISTRIBUTION.md", "omni": "OMNIVOICE_GUIDE.md", "discord": "DISCORD_GUIDE.md"}
 
 
 @app.get("/api/manual/{name}")
@@ -407,3 +427,105 @@ def manual(name: str):
         elif line.strip():
             result.append("<p>" + safe + "</p>")
     return {"html": "\n".join(result)}
+
+
+service = SpeechService(store,dictionary,manager,resolve_voice)
+
+
+@app.exception_handler(JobError)
+async def job_error(request, exc):
+    return JSONResponse({"detail":str(exc)},status_code=exc.status)
+
+
+@app.get("/api/v2/engines")
+def engines():
+    return {kind:{**manager.status[kind],"installed":manager.installed(kind),"languages":["ja"] if kind=="irodori" else ["ja","en"],"stream":False} for kind in manager.workers}
+
+
+@app.get("/api/v2/reading-dictionary")
+def get_dictionary():
+    return dictionary.get()
+
+
+class DictionaryUpdate(BaseModel):
+    expected_revision: int
+    entries: list[dict] = Field(max_length=100)
+
+
+@app.put("/api/v2/reading-dictionary")
+def put_dictionary(value: DictionaryUpdate):
+    try: return dictionary.update(value.entries,value.expected_revision)
+    except Conflict as exc: raise HTTPException(409,str(exc))
+    except ValueError as exc: raise HTTPException(422,str(exc))
+
+
+class ReadingPreview(BaseModel):
+    text: str = Field(min_length=1,max_length=160)
+    mode: str = Field(default="ja",pattern="^(ja|ja_to_en)$")
+    use_dictionary: bool = True
+    draft_entries: list[dict] | None = Field(default=None,max_length=100)
+
+
+@app.post("/api/v2/reading-preview")
+def preview_reading(value: ReadingPreview):
+    from reading_dictionary import validate_entries
+    current = dictionary.get()
+    try:
+        entries = validate_entries(value.draft_entries,current["entries"]) if value.draft_entries is not None else current["entries"]
+        return apply_reading(value.text,entries,None if value.draft_entries is not None else current["revision"],value.mode,value.use_dictionary)
+    except ValueError as exc: raise HTTPException(422,str(exc))
+
+
+@app.post("/api/v2/speech-jobs",status_code=202)
+def create_job(value: SpeechRequest):
+    try: return service.public_job(service.jobs.submit(value.model_dump(),service.snapshot))
+    except ValueError as exc:
+        if isinstance(exc,JobError): raise
+        raise HTTPException(422,str(exc))
+
+
+@app.get("/api/v2/speech-jobs/{job_id}")
+def get_job(job_id: str):
+    return service.public_job(service.jobs.get(job_id))
+
+
+@app.get("/api/v2/speech-jobs/{job_id}/audio")
+def job_audio(job_id: str):
+    audio,headers = service.jobs.audio(job_id)
+    return Response(audio,media_type="audio/wav",headers=headers)
+
+
+@app.delete("/api/v2/speech-jobs/{job_id}")
+def cancel_job(job_id: str):
+    return service.jobs.cancel(job_id)
+
+
+@app.post("/api/v2/clients/{client_id}/cancel")
+def cancel_client(client_id: str):
+    return service.jobs.cancel_client(client_id)
+
+
+@app.get("/api/v2/voices/{voice_id}/reference")
+def voice_reference(voice_id: str):
+    path = resolve_voice(voice_id)
+    return {**service.profile(voice_id),"duration_seconds":sf.info(path).duration if path.exists() else None}
+
+
+@app.put("/api/v2/voices/{voice_id}/reference")
+def save_reference(voice_id: str,value: VoiceReference):
+    try: return service.save_profile(voice_id,value)
+    except ValueError as exc: raise HTTPException(422,str(exc))
+
+
+@app.post("/api/v2/voices/{voice_id}/prepare",status_code=202)
+def prepare_reference(voice_id: str):
+    try: return service.prepare_voice(voice_id)
+    except ValueError as exc:
+        if isinstance(exc,JobError): raise
+        raise HTTPException(422,str(exc))
+
+
+@app.get("/api/v2/voices/{voice_id}/preparation")
+def reference_status(voice_id: str):
+    resolve_voice(voice_id)
+    return service.preparations.get(voice_id,{"state":"unprepared"})

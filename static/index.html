@@ -6,26 +6,27 @@
   <a class="brand" href="#speak" aria-label="Echo Ego 発話画面"><span class="brandmark" aria-hidden="true"><svg class="brand-icon" viewBox="0 0 32 32"><use href="/static/icons.svg#workshop"></use></svg></span>Echo Ego</a>
   <nav aria-label="画面切り替え"><a id="nav-speak" href="#speak" aria-current="page"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#voice"></use></svg>発話</a><a id="nav-history" href="#history"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#history"></use></svg>履歴 <span id="history-count" class="badge">0</span></a></nav>
   <nav aria-label="管理画面"><a id="nav-voices" href="#voices">声</a><a id="nav-settings" href="#settings">設定</a><a id="nav-guide" href="#guide">使い方</a></nav>
-  <span id="status" role="status">接続しています…</span>
 </header>
+<div class="status-bar"><span class="status-label">動作状況</span><span id="status" role="status" aria-live="polite" aria-atomic="true">接続しています…</span></div>
 <section id="speak-view" class="screen" aria-labelledby="speak-title">
   <div class="screen-heading"><span class="workshop-caption">YOUR WORDS, YOUR VOICE</span><h1 id="speak-title">話したいことを、ここに。</h1><p>文を入力してEnter。選んだ声で発話します。</p></div>
   <section class="composer" aria-label="発話の入力">
     <label for="text" class="field-title">話す内容</label>
-    <textarea id="text" maxlength="160" placeholder="こんにちは。今日はいい天気ですね。" autofocus></textarea>
+    <div class="controls"><label>発話モード<select id="speech-mode"><option value="ja">日本語</option><option value="ja_to_en">英語に翻訳</option></select></label><label>音声エンジン<select id="speech-engine"><option value="irodori">Irodori（日本語）</option><option value="omnivoice">OmniVoice（日英）</option></select></label></div><textarea id="text" placeholder="こんにちは。今日はいい天気ですね。" autofocus></textarea>
     <div class="hint"><span>Enterで発話 · Shift＋Enterで改行</span><span id="count">0 / 160</span></div>
     <div class="controls"><label>声<select id="voice"></select></label><label>話す速さ<select id="speed"><option value="1">1.0倍</option><option value="1.2">1.2倍</option><option value="0.85">0.85倍</option></select></label></div>
     <div class="actions"><button id="speak" disabled><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#voice"></use></svg>発話する <span class="keycap" aria-hidden="true">↵</span></button><button id="stop" class="secondary" disabled><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#stop"></use></svg>停止</button><button id="upload-button" class="upload"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#upload"></use></svg>自分の声を登録</button><input id="upload" type="file" accept=".wav" hidden></div>
     <p class="small">自分の声は1〜30秒・20MB以内のWAVで登録できます。</p>
     <div class="phrases" aria-label="よく使う言葉"><button data-text="はい、わかりました。">はい、わかりました</button><button data-text="ありがとうございます。">ありがとうございます</button><button data-text="少し待ってください。">少し待ってください</button></div>
-    <p id="message" role="status"></p>
+    <p id="voice-availability" class="small" role="status"></p><a class="textbutton" href="#voices">お気に入り・声の設定</a>
+    <p id="message" role="status"></p><p id="translated-text" class="notice" hidden></p><button id="reading-check" class="secondary">読みを確認</button><p id="reading-preview" role="status"></p>
     <div id="queue-list" aria-label="発話待ち"></div>
   </section>
   <div class="response-summary"><span>送信から再生開始まで</span><strong id="total">—<small> 秒</small></strong><span class="response-caption">最新の発話</span></div>
   <details class="details-panel"><summary><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#settings"></use></svg>応答時間の詳細・生成設定</summary><div class="detail-content">
     <div class="metrics"><div><span>音声受信まで</span><strong id="received">—<small> 秒</small></strong></div><div><span>音声先頭の無音目安</span><strong id="silence">—<small> 秒</small></strong></div></div>
     <p class="small">再生開始はブラウザーの再生スケジュールまでの時間です。先頭の無音と出力機器の遅延が加わります。</p>
-    <label class="advanced-label">生成ステップ<select id="steps"><option value="4">4 — 標準・高速</option><option value="6">6 — 比較用</option><option value="8">8 — 比較用</option></select></label><p id="model" class="small">音声を準備しています</p>
+    <label class="advanced-label">生成ステップ<select id="steps"><option value="4">4 — 標準・高速</option><option value="6">6 — 比較用</option><option value="8">8 — 比較用</option></select></label><label>OmniVoice生成ステップ<select id="omni-steps"><option value="32">32 — 標準</option><option value="16">16 — 速度比較</option></select></label><p id="model" class="small">音声を準備しています</p>
   </div></details>
 </section>
 <section id="history-view" class="screen" aria-labelledby="history-title" hidden>
@@ -45,12 +46,12 @@
   </section><p id="voice-notice" role="status"></p><div id="voice-list"></div>
 </section>
 <section id="settings-view" class="screen" hidden aria-labelledby="settings-title">
-  <div class="screen-heading"><span class="workshop-caption">WORKSHOP SETTINGS</span><h1 id="settings-title">設定</h1><p>発話・保存・Irodori-TTSの環境を設定します。</p></div>
+  <div class="screen-heading"><span class="workshop-caption">WORKSHOP SETTINGS</span><h1 id="settings-title">設定</h1><p>発話・読み辞書・保存の設定を行います。</p></div>
   <section class="composer"><h2>再生と履歴</h2><label>音量<input id="volume" type="range" min="0" max="1" step="0.05" value="0.8"></label><label>音声出力<select id="output-device"><option value="">標準の出力先</option></select></label><button id="output-devices" class="secondary">出力先を確認</button><button id="test-output" class="secondary">確認音を鳴らす</button><p id="output-notice" class="small"></p>
     <label class="check-label"><input id="history-enabled" type="checkbox">履歴を音声込みでこのPCに保存する</label><p class="small">保存をオフにして設定を保存すると、ディスク内の履歴を削除します。保存しない場合はタブ内で最大10件保持します。</p>
     <div class="controls"><label>保存件数<input id="history-limit" type="number" min="1" max="500" value="50"></label><label>保存期間（日）<input id="history-days" type="number" min="1" max="365" value="7"></label><label>保存容量（MB）<input id="history-mb" type="number" min="1" max="1000" value="100"></label></div>
     <h2>定型句</h2><p class="small">最大9件。Alt＋1〜9で発話できます。声・速さ・ステップ・読み辞書を変えると別の音声を生成します。</p><div id="phrase-editor"></div><button id="phrase-add" class="secondary">定型句を追加</button><button id="phrase-prepare" class="secondary">定型句を事前生成</button><button id="cache-clear" class="secondary">定型句の音声を削除</button><p id="cache-notice" role="status"></p>
-    <h2>読み辞書</h2><p class="small">表示する文章はそのまま、発話用の読みだけ置き換えます。</p><div id="dictionary-editor"></div><button id="dictionary-add" class="secondary">読みを追加</button>
+    <h2>読み辞書</h2><p class="small">表示する文章はそのまま、発話用の読みだけ置き換えます。</p><div id="dictionary-editor"></div><button id="dictionary-add" class="secondary">読みを追加</button><p class="small">長い語を優先し、一度だけ置換します。英語への翻訳には適用しません。読みはかなで入力してください。</p><label>確認する例文<input id="dictionary-example" value="日本橋で集合します。"></label><button id="dictionary-preview-button" class="secondary">未保存の読みを確認</button><button id="dictionary-audition" class="secondary">保存済み辞書で試聴</button><p id="dictionary-preview-result" role="status"></p>
     <div class="actions"><button id="save-settings">設定を保存</button></div><p id="settings-notice" role="status"></p>
   </section>
   <details class="details-panel"><summary>Irodori-TTSの環境設定</summary><div class="detail-content"><p id="diagnostics"></p><p class="small">変更は保存してアプリを終了・起動すると反映されます。相対パスはEcho Egoフォルダーが基準です。</p>
@@ -59,6 +60,6 @@
     <div class="actions"><button id="save-runtime">環境設定を保存</button><button id="load-runtime" class="secondary">モデルを読み込む</button><button id="shutdown" class="danger-outline">アプリを終了</button></div><p id="runtime-notice" role="status"></p>
   </div></details>
 </section>
-<section id="guide-view" class="screen" hidden aria-labelledby="guide-title"><div class="screen-heading"><span class="workshop-caption">WORKSHOP HANDBOOK</span><h1 id="guide-title">マニュアル</h1><p>操作・Irodori-TTSの導入・配布について確認できます。</p></div><div class="actions"><button data-manual="user">使い方</button><button data-manual="setup" class="secondary">Irodori-TTSの設定</button><button data-manual="release" class="secondary">GitHub配布</button></div><article id="manual-content" class="composer manual"></article></section>
+<section id="guide-view" class="screen" hidden aria-labelledby="guide-title"><div class="screen-heading"><span class="workshop-caption">WORKSHOP HANDBOOK</span><h1 id="guide-title">マニュアル</h1><p>操作・Irodori-TTSの導入・配布について確認できます。</p></div><div class="actions"><button data-manual="user">使い方</button><button data-manual="setup" class="secondary">Irodori-TTSの設定</button><button data-manual="omni" class="secondary">OmniVoice・英語・読み辞書</button><button data-manual="discord" class="secondary">Discord・VB-CABLE</button><button data-manual="release" class="secondary">GitHub配布</button></div><article id="manual-content" class="composer manual"></article></section>
 <footer><span><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#lock"></use></svg>入力と音声は、このPC内で処理します。</span><span class="footer-signature">ECHO EGO / VOICE WORKSHOP</span></footer>
 </main><script src="/static/app.js"></script><script src="/static/features.js"></script></body></html>

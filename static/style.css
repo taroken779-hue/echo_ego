@@ -171,3 +171,14 @@ button:not(.secondary):not(.textbutton):not(.danger-outline):not(.upload) { colo
 #settings-view .composer>p, #voices-view .composer>p { line-height:1.8; font-size:13px; }
 audio { width:100%; margin:12px 0; }
 @media(max-width:600px) { .editor-row { flex-wrap:wrap; } .editor-row input { flex-basis:40%; } .controls { flex-wrap:wrap; } .controls label { min-width:100px; } }
+
+/* Keep operation progress visible on every screen, including long voice lists. */
+.status-bar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); box-shadow: 0 5px 12px #0003; }
+.status-label { flex-shrink: 0; font-size: 12px; color: var(--muted); }
+.status-bar #status { margin-left: 0; font-size: 13px; white-space: normal; line-height: 1.6; }
+#status::before { flex-shrink: 0; }
+#status[data-state=busy] { color: #ffe1a1; border-color: var(--brass); }
+#status[data-state=busy]::before { animation: status-pulse 1.2s ease-in-out infinite; }
+@keyframes status-pulse { 50% { opacity: .3; } }
+@media(prefers-reduced-motion:reduce) { #status[data-state=busy]::before { animation: none; } }
+@media(max-width:600px) { .status-bar { gap: 8px; } .status-bar #status { font-size: 12px; } }

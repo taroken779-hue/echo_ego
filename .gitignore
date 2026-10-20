@@ -7,5 +7,6 @@ data/
 presets/
 config.local.json
 config.local.tmp
+config.local.v1-backup.json
 dist/
 .pytest_cache/

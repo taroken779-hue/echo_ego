@@ -20,6 +20,11 @@ def ok(response):
     response.raise_for_status()
     return response
 
+def put_preferences(value):
+    current = client.get("/api/preferences")
+    return client.put("/api/preferences", json=value, headers={"If-Match":current.headers["ETag"]})
+
+
 try:
     deadline = time.monotonic() + 180
     while client.get("/api/status").json()["phase"] != "ready":
@@ -29,7 +34,7 @@ try:
     for name in ["user", "setup", "release"]:
         assert "<h1>" in ok(client.get("/api/manual/" + name)).json()["html"]
     prefs = dict(original, history_enabled=True, dictionary=[{"surface":"Echo Ego", "reading":"エコーエゴ"}])
-    ok(client.put("/api/preferences", json=prefs))
+    ok(put_preferences(prefs))
     payload = {"text":"Echo Egoです。", "voice":"design:calm_male", "steps":4,"speed":1,"use_cache":True}
     first_timestamp = None
     for index in range(2):
@@ -53,7 +58,7 @@ try:
     assert len(ok(client.get("/api/voices/"+voice_id+"/audio")).content)>1000
     ok(client.delete("/api/voices/"+voice_id)); voice_id=None
     changed = dict(prefs,dictionary=[{"surface":"Echo Ego","reading":"エコー エゴ"}])
-    ok(client.put("/api/preferences",json=changed))
+    ok(put_preferences(changed))
     response=ok(client.post("/api/speech",json=payload)); assert response.headers["X-Cached"]=="0"
     invalid = dict(payload,steps=5)
     assert client.post("/api/speech",json=invalid).status_code==400
@@ -64,5 +69,5 @@ try:
 finally:
     if voice_id: client.delete("/api/voices/"+voice_id)
     client.delete("/api/history/"+history_id)
-    client.put("/api/preferences",json=original)
+    put_preferences(original)
     (root/".runtime"/"features-verification.json").write_text(json.dumps(results,indent=2),encoding="utf-8")

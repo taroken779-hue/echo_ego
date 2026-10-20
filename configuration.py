@@ -9,6 +9,10 @@ CONFIG_PATH = ROOT / "config.local.json"
 
 
 class RuntimeConfig(BaseModel):
+    schema_version: int = 2
+    omnivoice_python: str = "runtime/omnivoice/.venv/Scripts/python.exe"
+    omnivoice_model: str = "runtime/omnivoice/model"
+    translation_model: str = "runtime/omnivoice/translation"
     python_path: str = ".venv/Scripts/python.exe"
     source_path: str = "runtime/Irodori-TTS"
     model_path: str = "runtime/models/MF/model.safetensors"
@@ -44,6 +48,8 @@ def load_config():
 
 
 def save_config(config):
+    if CONFIG_PATH.exists() and not CONFIG_PATH.with_suffix(".v1-backup.json").exists():
+        CONFIG_PATH.with_suffix(".v1-backup.json").write_bytes(CONFIG_PATH.read_bytes())
     temp = CONFIG_PATH.with_suffix(".tmp")
     temp.write_text(config.model_dump_json(indent=2), encoding="utf-8")
     os.replace(temp, CONFIG_PATH)

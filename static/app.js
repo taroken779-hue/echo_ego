@@ -5,9 +5,18 @@ let ready = false, composing = false, playing = false, playingItemId = null;
 let serverMessage = '接続しています…', phase = 'loading', deletedItems = [];
 let preferences = {}, voiceItems = [], queue = [], prepared = [], synthesizing = false, activeJob = null, gain;
 const history = [];
+let clientId = sessionStorage.echoClient || (sessionStorage.echoClient = crypto.randomUUID());
+let submissionChain = Promise.resolve();
+let engineStates = {}, operationError = '', omniReferenceReady = false;
+function engineName(engine) { return engine === 'irodori' ? 'Irodori-TTS' : 'OmniVoice'; }
+function jobProgress(job) {
+  const name = engineName(job.payload.engine);
+  return ({queued:'発話待ち', translating:'英語に翻訳中', waiting_engine:`${name}を準備中 · エンジンの切り替え・モデルの読み込みを待っています`, synthesizing:`${name}で音声を生成中`})[job.state] || `${name}への発話を受け付けています`;
+}
+function selectedEngine() { return $('speech-mode').value === 'ja_to_en' ? 'omnivoice' : $('speech-engine').value; }
 const labels = {age_middle_male:'男性・落ち着いた声',age_middle_female:'女性・落ち着いた声',age_young_male:'男性・若い声',age_young_female:'女性・若い声',age_senior_male:'男性・年配の声',age_senior_female:'女性・年配の声',age_child_male:'男の子の声',age_child_female:'女の子の声',narrator:'ナレーター'};
 const dateFormat = new Intl.DateTimeFormat('ja-JP', {timeZone:'Asia/Tokyo', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'});
-function canSpeak() { return ready && queue.length + prepared.length < 8; }
+function canSpeak() { return ready && Boolean($('voice').value) && (selectedEngine() !== 'omnivoice' || omniReferenceReady) && queue.length + prepared.length < 8; }
 function seconds(ms) { return (ms / 1000).toFixed(2); }
 function icon(name) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -17,8 +26,12 @@ function icon(name) {
   return svg;
 }
 function updateStatus() {
-  $('status').textContent = (playing ? '再生中' : localBusy ? '音声を生成中' : remoteBusy ? '音声の処理中' : serverMessage) + (queue.length + prepared.length ? ` · 待ち ${queue.length + prepared.length}件` : '');
-  $('status').dataset.state = phase === 'error' ? 'error' : 'normal';
+  const loadingEngine = Object.keys(engineStates).find(key => engineStates[key].phase === 'loading');
+  const progress = activeJob ? jobProgress(activeJob) : '';
+  const loadingMessage = loadingEngine ? `${engineName(loadingEngine)}を準備中 · モデルを読み込んでいます` : '';
+  const message = operationError || (phase === 'error' ? serverMessage : '') || (playing ? `再生中${progress ? ' · ' + progress : ''}` : progress || loadingMessage || (remoteBusy ? '音声の処理中' : serverMessage));
+  $('status').textContent = message + (queue.length + prepared.length ? ` · 待ち ${queue.length + prepared.length}件` : '');
+  $('status').dataset.state = operationError || phase === 'error' ? 'error' : localBusy || playing || loadingEngine || remoteBusy ? 'busy' : 'normal';
   $('speak').disabled = !canSpeak();
   $('stop').disabled = !localBusy && !remoteBusy && !playing && !queue.length && !prepared.length;
   if ($('queue-list')) renderQueue();
@@ -39,26 +52,49 @@ async function refresh() {
     const r = await fetch('/api/status');
     if (!r.ok) throw Error('接続できません');
     const s = await r.json();
-    ready = s.phase === 'ready'; remoteBusy = s.busy; phase = s.phase; serverMessage = s.message;
-    $('model').textContent = `${s.model} · ${s.precision} · ${s.device.toUpperCase()} · ${ready ? '常駐中' : '準備中'}${ready && !s.watermark ? ' · 音声透かし未読込（setupで修復）' : ''}`;
+    const engines = await (await fetch('/api/v2/engines')).json();
+    engineStates = engines;
+    const selected = engines[selectedEngine()], name = engineName(selectedEngine());
+    ready = Boolean(selected?.installed); remoteBusy = s.busy; phase = selected?.phase || 'idle';
+    serverMessage = !ready ? `${name}は未導入です` : phase === 'error' ? `${name}の準備に失敗しました。環境設定を確認してください` : phase === 'loading' ? `${name}を準備中 · モデルを読み込んでいます` : phase === 'ready' ? `${name}のモデル準備完了 · ${selectedEngine() === 'omnivoice' ? '発話には声の参照設定も必要です' : '発話できます'}` : `${name}を選択中 · 次の発話時にエンジンを切り替え・準備します`;
+    $('model').textContent = `${selectedEngine() === 'omnivoice' ? 'OmniVoice' : s.model} · ${s.device.toUpperCase()} · ${engines[selectedEngine()]?.message || '未準備'}`;
     voiceItems = s.voices;
     const old = $('voice').value;
     const signature = JSON.stringify(s.voices);
     if ($('voice').dataset.signature !== signature) {
       $('voice').replaceChildren();
-      for (const v of s.voices) {
+      const favorites = s.voices.filter(v => v.favorite);
+      for (const v of favorites) {
         const o = document.createElement('option'); o.value = v.id;
         o.textContent = (v.favorite ? '★ ' : '') + (labels[v.name] || v.name);
         $('voice').append(o);
       }
-      $('voice').value = s.voices.some(v => v.id === old) ? old : s.voices.some(v => v.id === preferences.voice) ? preferences.voice : s.voices[0]?.id;
+      $('voice').value = favorites.some(v => v.id === old) ? old : favorites.some(v => v.id === preferences.voice) ? preferences.voice : favorites[0]?.id || '';
+      $('voice').disabled = !favorites.length;
       $('voice').dataset.signature = signature;
       renderVoices();
     }
+    await updateVoiceNotice();
+    if (!$('voice').value) serverMessage = 'お気に入りの声がありません · 「声」ページで登録してください';
+    else if (selectedEngine() === 'omnivoice' && !omniReferenceReady && phase !== 'error' && phase !== 'loading') serverMessage = 'OmniVoice用の声の参照設定が必要です · 「声」ページを確認してください';
   } catch (e) {
     ready = false; phase = 'error'; serverMessage = 'サーバーへ接続できません';
   }
   updateStatus();
+}
+async function updateVoiceNotice() {
+  const voice = $('voice').value, engine = selectedEngine();
+  omniReferenceReady = false;
+  const notice = $('voice-availability');
+  if (!voice) { notice.textContent = 'お気に入りの声がありません。「声」ページでお気に入りにチェックを入れて保存してください。'; return; }
+  if (engine !== 'omnivoice') { notice.textContent = 'お気に入りの声を表示しています。Irodori-TTSは参照音声から声を再現します。'; return; }
+  notice.textContent = 'OmniVoice用の声の設定を確認しています…';
+  try {
+    const ref = await api('/api/v2/voices/' + encodeURIComponent(voice) + '/reference');
+    if ($('voice').value !== voice || selectedEngine() !== engine) return;
+    omniReferenceReady = Boolean(ref.reference_transcript?.trim()) && ref.clip_end_ms != null && ref.clip_end_ms - ref.clip_start_ms >= 3000 && ref.clip_end_ms - ref.clip_start_ms <= 10000 && ref.clip_end_ms <= ref.duration_seconds * 1000 + 1;
+    notice.textContent = omniReferenceReady ? 'OmniVoice用の参照設定あり。参照区間と文字起こしが一致しているか「声」ページで確認できます。' : 'この声はOmniVoice用の設定が必要です。「声」ページで3〜10秒の参照区間と、その区間の正確な文字起こしを保存してください。';
+  } catch { if ($('voice').value === voice) notice.textContent = 'OmniVoice用の設定を確認できません。「声」ページを確認してください。'; }
 }
 async function audioContext() {
   if (!ctx) { ctx = new AudioContext(); gain = ctx.createGain(); gain.connect(ctx.destination); }
@@ -73,6 +109,8 @@ function stopPlayback() {
   playing = false; playingItemId = null;
 }
 function stop() {
+  const oldClient = clientId; clientId = crypto.randomUUID(); sessionStorage.echoClient = clientId;
+  fetch('/api/v2/clients/' + oldClient + '/cancel', {method:'POST'}).catch(()=>{});
   generation++; controller?.abort(); controller = null;
   $('record-preview').pause();
   if (!$('voices-view').hidden) $('voice-notice').textContent = '音声の再生を停止しました。';
@@ -110,6 +148,8 @@ function renderHistory() {
     const voice = document.createElement('span'); voice.className = 'entry-voice'; voice.textContent = item.voice;
     top.append(time, voice);
     const p = document.createElement('p'); p.textContent = item.text;
+    if (item.translated_text) { const translation = document.createElement('p'); translation.lang = 'en'; translation.textContent = item.translated_text; top.append(translation); }
+    if (item.speech_text && !item.translated_text && item.speech_text !== item.text) { const reading = document.createElement('small'); reading.textContent = '読み：' + item.speech_text; top.append(reading); }
     const bottom = document.createElement('div'); bottom.className = 'entry-bottom';
     const timing = document.createElement('small'); timing.textContent = `再生開始 ${seconds(item.timing.total)}秒 · 生成 ${seconds(item.timing.synthesis)}秒`;
     const b = document.createElement('button'); b.append(icon('play'), document.createTextNode('再生')); b.onclick = () => replay(item); b.setAttribute('aria-label', item.text + 'を再生');
@@ -141,46 +181,63 @@ function undoDeletion() {
   $('history-notice-text').textContent = '履歴を元に戻しました。'; $('undo').hidden = true;
   renderHistory();
 }
-function addHistory(text, buffer, blob, timing, voice, generatedAt) {
-  const item = {id:crypto.randomUUID(), text, buffer, blob, timing, voice, generatedAt, url:URL.createObjectURL(blob)};
+function addHistory(text, buffer, blob, timing, voice, generatedAt, metadata = {}) {
+  const item = {...metadata,id:crypto.randomUUID(), text, buffer, blob, timing, voice, generatedAt, url:URL.createObjectURL(blob)};
   history.unshift(item); release(history.splice(preferences.history_enabled ? preferences.history_count : 10)); renderHistory();
   persistItem(item);
   return item.id;
 }
-async function speak(useCache = false) {
+async function speak(useCache = false, overrides = {}) {
   if (!canSpeak()) return;
-  const text = $('text').value.trim();
-  if (!text) { $('message').textContent = '文を入力してください'; return; }
-  const payload = {text, voice:$('voice').value, steps:Number($('steps').value), speed:Number($('speed').value), use_cache:useCache === true};
-  const voiceName = $('voice').selectedOptions[0]?.textContent;
-  const token = generation, start = performance.now(); await audioContext(); if (token !== generation || !canSpeak()) return;
-  queue.push({id:crypto.randomUUID(), payload, voiceName, start, token:generation});
-  $('message').textContent = '発話を受け付けました。'; updateStatus(); pumpSynthesis();
+  const text = overrides.text ?? $('text').value;
+  if (!text.trim() || Array.from(text).length > 160) { $('message').textContent = '1〜160文字で入力してください'; return; }
+  const engine = selectedEngine();
+  const payload = {text,voice_id:$('voice').value,mode:$('speech-mode').value,engine,speed:Number($('speed').value),
+    engine_settings:engine === 'irodori' ? {steps:Number($('steps').value)} : {num_step:Number($('omni-steps').value)},
+    client_id:clientId,request_id:crypto.randomUUID(),use_phrase_cache:useCache === true,...overrides};
+  const token = generation, start = performance.now(), voiceName = $('voice').selectedOptions[0]?.textContent;
+  await audioContext(); if (token !== generation || !canSpeak()) return;
+  const job = {id:crypto.randomUUID(),payload,voiceName,start,token};
+  queue.push(job);
+  job.submission = submissionChain.catch(()=>{}).then(async()=> {
+    if (token !== generation) throw Error('取消済み');
+    const response = await fetch('/api/v2/speech-jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const value = await response.json();
+    if (!response.ok) throw Error(typeof value.detail === 'string' ? value.detail : '入力内容を確認してください');
+    job.serverId = value.id;
+    if (token !== generation || job.cancelled) { await fetch('/api/v2/speech-jobs/'+value.id,{method:'DELETE'}); throw Error('取消済み'); }
+    return value;
+  });
+  submissionChain = job.submission.catch(()=>{});
+  // Attach rejection handler immediately, including while another job is playing.
+  job.submission.catch(()=>{});
+  $('message').textContent = '発話を受け付けています。'; updateStatus(); pumpSynthesis();
 }
 async function pumpSynthesis() {
   if (synthesizing || !queue.length) return;
-  const job = queue.shift(), {payload, token, start} = job;
-  synthesizing = true; localBusy = true; activeJob = job; updateStatus();
-  const abort = new AbortController(); controller = abort;
+  const job = queue.shift(), {payload,token,start} = job;
+  synthesizing = true; localBusy = true; activeJob = job; operationError = ''; updateStatus();
   try {
-    let r;
-    do {
-      if (token !== generation) return;
-      r = await fetch('/api/speech', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), signal:abort.signal});
-      if (r.status === 409) await new Promise(resolve => setTimeout(resolve, 250));
-    } while (r.status === 409 && performance.now() - start < 60000);
-    if (!r.ok) { const err = await r.json(); throw Error(typeof err.detail === 'string' ? err.detail : '入力内容を確認してください'); }
-    const bytes = await r.arrayBuffer(), received = performance.now() - start;
-    const buffer = await ctx.decodeAudioData(bytes.slice(0)); if (token !== generation) return;
-    prepared.push({...job, bytes, buffer, received, first:Number(r.headers.get('X-First-Signal-Ms')), generatedAt:r.headers.get('X-Generated-At') || new Date().toISOString(), synthesis:Number(r.headers.get('X-Synthesis-Ms')), cached:r.headers.get('X-Cached') === '1'});
+    let result = await job.submission;
+    while (!['ready','failed','cancelled'].includes(result.state)) {
+      if (token !== generation || job.cancelled) return;
+      job.state = result.state;
+      $('message').textContent = jobProgress(job); updateStatus();
+      await new Promise(resolve=>setTimeout(resolve,250));
+      result = await api('/api/v2/speech-jobs/'+job.serverId);
+    }
+    if (result.state === 'failed') throw Error(result.error.message);
+    if (result.state === 'cancelled' || token !== generation || job.cancelled) return;
+    const response = await fetch('/api/v2/speech-jobs/'+job.serverId+'/audio');
+    if (!response.ok) throw Error('音声を取得できませんでした');
+    const bytes = await response.arrayBuffer(),received = performance.now()-start;
+    const buffer = await ctx.decodeAudioData(bytes.slice(0)); if (token !== generation || job.cancelled) return;
+    const snapshot = result.snapshot;
+    prepared.push({...job,bytes,buffer,received,metadata:{speech_text:snapshot.speech_text,translated_text:snapshot.translated_text,engine:snapshot.engine,reading_revision:snapshot.reading_revision,model_identity:snapshot.model,voice_revision:snapshot.voice_revision},
+      first:Number(response.headers.get('X-First-Signal-Ms')),generatedAt:response.headers.get('X-Generated-At'),synthesis:Number(response.headers.get('X-Synthesis-Ms')),cached:response.headers.get('X-Cached')==='1'});
     pumpPlayback();
-  } catch (e) {
-    if (token === generation && e.name !== 'AbortError') $('message').textContent = e.message;
-  } finally {
-    synthesizing = false; localBusy = false; activeJob = null;
-    if (controller === abort) controller = null;
-    updateStatus(); pumpSynthesis();
-  }
+  } catch(e) { if (token === generation && !job.cancelled) { operationError = e.message; $('message').textContent = e.message; } }
+  finally { synthesizing = false;localBusy = false;activeJob = null;updateStatus();pumpSynthesis(); }
 }
 function pumpPlayback() {
     if (playing || !prepared.length) return;
@@ -192,14 +249,15 @@ function pumpPlayback() {
     $('silence').innerHTML = (first < 0 ? '検出なし' : seconds(first)) + '<small> 秒</small>';
     const output = (ctx.outputLatency || 0) * 1000;
     $('message').textContent = (cached ? '生成済みの音声を使用。' : '') + (first >= 0 ? `先頭の音までの目安：${seconds(total + first + output)}秒（出力機器の遅延は推定）` : '音声の信号を検出できませんでした。');
-    playingItemId = addHistory(payload.text, buffer, new Blob([bytes], {type:'audio/wav'}), {total,received,synthesis}, voiceName, generatedAt);
+    $('translated-text').hidden = !job.metadata?.translated_text; $('translated-text').textContent = job.metadata?.translated_text || '';
+    if (!payload.audition) playingItemId = addHistory(payload.text, buffer, new Blob([bytes], {type:'audio/wav'}), {total,received,synthesis}, voiceName, generatedAt, job.metadata);
     updateStatus();
 }
 $('speak').onclick = () => speak().catch(e => $('message').textContent = e.message); $('stop').onclick = stop;
 $('text').addEventListener('compositionstart', () => composing = true);
 $('text').addEventListener('compositionend', () => composing = false);
 $('text').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !composing && e.keyCode !== 229) { e.preventDefault(); if (!e.repeat) speak().catch(error => $('message').textContent = error.message); } });
-$('text').addEventListener('input', () => $('count').textContent = `${$('text').value.length} / 160`);
+$('text').addEventListener('input', () => $('count').textContent = `${Array.from($('text').value).length} / 160`);
 window.addEventListener('hashchange', showView);
 $('clear').onclick = () => deleteHistory(history.map(item => item.id));
 $('undo').onclick = undoDeletion;
@@ -214,3 +272,12 @@ $('upload').onchange = async () => {
   finally { $('upload').value = ''; $('upload-button').disabled = false; }
 };
 window.addEventListener('keydown', e => { if (e.key === 'Escape') { stop(); } if (e.altKey && /^[1-9]$/.test(e.key) && !e.isComposing && !e.repeat) { e.preventDefault(); triggerPhrase(Number(e.key) - 1); } });
+
+$('speech-mode').onchange = () => { operationError = '';  if ($('speech-mode').value === 'ja_to_en') $('speech-engine').value = 'omnivoice'; refresh(); rememberSpeechSettings(); };
+$('speech-engine').onchange = () => { operationError = '';  if ($('speech-mode').value === 'ja_to_en') $('speech-engine').value = 'omnivoice'; refresh(); rememberSpeechSettings(); };
+$('omni-steps').onchange = () => rememberSpeechSettings();
+$('reading-check').onclick = async () => {
+  try { const result = await api('/api/v2/reading-preview',jsonRequest('POST',{text:$('text').value,mode:$('speech-mode').value,use_dictionary:true}));
+    $('reading-preview').textContent = $('speech-mode').value === 'ja' ? '読み上げる文：'+result.speech_text : result.warnings.join(' ');
+  } catch(e) { $('reading-preview').textContent = e.message; }
+};
