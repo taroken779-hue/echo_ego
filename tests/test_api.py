@@ -37,7 +37,7 @@ class ApiTests(unittest.TestCase):
                 return {"audio":base64.b64encode(out.getvalue()).decode(),"headers":{"X-Synthesis-Ms":"1","X-Generated-At":"2026-10-19T00:00:00Z"}}
             return {}
         cls.patches=[patch.object(cls.app.manager,"installed",return_value=True),patch.object(cls.app.manager,"identity",side_effect=lambda engine:{"engine":engine}),
-                     patch.object(cls.app.manager,"activate",return_value={}),patch.object(cls.app.manager.workers["omnivoice"],"call",side_effect=fake_call),patch.object(cls.app.manager.workers["irodori"],"call",side_effect=fake_call)]
+                     patch.object(cls.app.manager,"activate",return_value={}),patch.object(cls.app.manager.workers["omnivoice"],"call",side_effect=fake_call),patch.object(cls.app.manager.auxiliary,"call",side_effect=fake_call)]
         for item in cls.patches:item.start()
     @classmethod
     def tearDownClass(cls):
@@ -131,6 +131,59 @@ class ApiTests(unittest.TestCase):
                 self.assertTrue(self.client.get('/api/v2/voices/custom:test/reference').json()['reference_audio_changed'])
         finally:
             self.path.write_bytes(original)
+
+    def test_07_catalog_retired_api_and_invalid_model(self):
+        models=self.client.get('/api/v2/models').json()
+        self.assertEqual(set(models),{'omnivoice'})
+        self.assertTrue(models['omnivoice']['reference']['transcript_required'])
+        self.assertEqual(self.client.post('/api/speech',json={}).status_code,410)
+        bad={'client_id':'bad-model','request_id':'missing','voice_id':'custom:test','text':'こんにちは。','model_id':'missing'}
+        self.assertEqual(self.client.post('/api/v2/speech-jobs',json=bad).status_code,422)
+
+    def test_08_missing_reference_is_explicit_and_does_not_fallback(self):
+        from speech.service import VoiceReference
+        self.app.service.save_profile('custom:empty',VoiceReference(
+            clip_start_ms=0,clip_end_ms=4000,reference_transcript=''))
+        bad={'client_id':'missing-ref','request_id':'empty','voice_id':'custom:empty','text':'こんにちは。','model_id':'omnivoice'}
+        before=len(self.calls)
+        self.assertEqual(self.client.post('/api/v2/speech-jobs',json=bad).status_code,503)
+        self.assertEqual(len(self.calls),before)
+
+    def test_09_reference_validation_is_bound_to_requested_model(self):
+        from configuration import ModelConfig
+        from speech.backends.omnivoice import OmniVoiceBackend
+        with patch.dict(self.app.config.models,{'comparison':ModelConfig()}), patch.dict(self.app.manager.backends,{'comparison':OmniVoiceBackend}), patch.object(self.app,'resolve_voice',return_value=self.path):
+            ref=self.client.get('/api/v2/voices/custom:test/reference?model_id=comparison').json()
+            self.assertEqual(ref['model_id'],'comparison')
+            self.assertTrue(ref['valid_for_model'])
+            self.assertEqual(self.client.get('/api/v2/voices/custom:test/reference?model_id=missing').status_code,422)
+
+    def test_10_history_retains_translation_and_generation_provenance(self):
+        import json, uuid
+        prefs=self.app.store.preferences()
+        self.app.store.save_preferences(prefs.model_copy(update={'history_enabled':True}))
+        metadata={'id':str(uuid.uuid4()),'text':'履歴の確認です。','voice':'test',
+            'generatedAt':'2026-10-22T00:00:00Z','timing':{},
+            'translation_identity':{'revision':'translation-test'},'generation_settings':{'num_step':16}}
+        try:
+            response=self.client.post('/api/history',data={'metadata':json.dumps(metadata)},files={'file':('test.wav',self.path.read_bytes(),'audio/wav')})
+            self.assertEqual(response.status_code,200,response.text)
+            stored=next(item for item in self.client.get('/api/history').json() if item['id']==metadata['id'])
+            self.assertEqual(stored['translation_identity'],metadata['translation_identity'])
+            self.assertEqual(stored['generation_settings'],metadata['generation_settings'])
+        finally:
+            self.app.store.delete_history(metadata['id'])
+            self.app.store.save_preferences(prefs)
+
+    def test_11_long_poll_is_bounded_and_initialization_preserves_voice_choice(self):
+        self.assertEqual(self.client.get('/api/v2/speech-jobs/missing?after_state=queued&wait_ms=1001').status_code,422)
+        prefs=self.app.store.preferences()
+        with patch.object(self.app.service,'prepare_voice',return_value={'state':'preparing'}) as prepare:
+            self.app.initialize()
+            prepare.assert_called_once_with(prefs.voice,prefs.model_id)
+        with patch.object(self.app.service,'prepare_voice',side_effect=ValueError('reference missing')):
+            self.app.initialize()
+            self.assertEqual(self.app.state['phase'],'ready')
 
 
 if __name__=='__main__':unittest.main()

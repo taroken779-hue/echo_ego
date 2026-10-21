@@ -20,23 +20,24 @@ def main():
     evidence={}
     try:
         with manager.lock:
-            manager.activate("irodori")
-            ref=manager.workers["irodori"].call("synthesize",{"text":transcript,"design_caption":"落ち着いた成人男性の声。穏やかで明瞭な標準語。","seed":20261019})
+            manager.activate("omnivoice")
+            ref=manager.call("omnivoice","design",{"text":transcript,"style":"calm_male","seed":20261019})
             path.write_bytes(base64.b64decode(ref["audio"]))
             import soundfile as sf
             duration=sf.info(path).duration
             print("Synthetic reference duration",duration,flush=True)
             if not 3<=duration<=10:raise RuntimeError("Synthetic reference must fit 3-10 seconds")
-            reference={"reference_path":str(path),"reference_transcript":transcript,"clip_start_ms":0,"clip_end_ms":round(duration*1000)}
+            reference={"reference_path":str(path),"reference_transcript":transcript,"reference_language":"ja","clip_start_ms":0,"clip_end_ms":round(duration*1000)}
             manager.activate("omnivoice")
             evidence["prepare"]=manager.workers["omnivoice"].call("prepare-voice",reference,timeout=120)
             for lang,text in [("ja","にほんばしで待っています。"),("en","Hello. I will be waiting for you at the station.")]:
-                result=manager.workers["omnivoice"].call("synthesize",{**reference,"text":text,"language":lang,"steps":16,"speed":1.},timeout=60)
+                result=manager.workers["omnivoice"].call("synthesize",{**reference,"text":text,"language":lang,"settings":{"num_step":16},"speed":1.},timeout=60)
                 target=ROOT/".runtime"/("omnivoice-smoke-"+lang+".wav")
                 target.write_bytes(base64.b64decode(result["audio"]))
                 evidence[lang]=result["headers"]
                 print(lang,result["headers"],flush=True)
-            evidence["translation"]=manager.workers["omnivoice"].call("translate",{"text":"駅で待っています。"},timeout=60)
+            evidence["asr"]=manager.auxiliary.call("transcribe-reference",{**reference,"wav_sha256":__import__("hashlib").sha256(path.read_bytes()).hexdigest()},timeout=300)
+            evidence["translation"]=manager.auxiliary.call("translate",{"text":"駅で待っています。"},timeout=60)
             print("translation",evidence["translation"],flush=True)
         (ROOT/".runtime/omnivoice-smoke.json").write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding="utf-8")
     finally:

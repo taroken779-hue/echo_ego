@@ -76,11 +76,11 @@ class StorageTests(unittest.TestCase):
         self.assertIsNone(self.store.cache("65"))
 
     def test_config_rejects_unsupported_modes(self):
-        for value in [dict(steps=5), dict(phrases=[Phrase(id="a",label="a",text="a")]*2), dict(dictionary=[Reading(surface="a",reading="a")]*2)]:
+        for value in [dict(speed=0), dict(phrases=[Phrase(id="a",label="a",text="a")]*2), dict(dictionary=[Reading(surface="a",reading="a")]*2)]:
             with self.assertRaises(ValueError): Preferences(**value)
         with self.assertRaises(ValueError): RuntimeConfig(device="cpu",precision="bf16")
         with self.assertRaises(ValueError): RuntimeConfig(device="web")
-        self.assertEqual(RuntimeConfig(device="cpu",precision="fp32").device,"cpu")
+        self.assertEqual(RuntimeConfig(device="cpu",precision="fp32").models["omnivoice"].device,"cpu")
 
 if __name__ == "__main__":
     unittest.main()

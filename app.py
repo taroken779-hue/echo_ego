@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, Query
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -25,22 +25,20 @@ from speech.runtime import RuntimeManager
 from speech.service import SpeechService, SpeechRequest, VoiceReference, AutoReference
 from speech.reference import DESIGN_TRANSCRIPT
 from speech.jobs import JobError
+from speech.errors import BackendFailure
 import base64
 from configuration import load_config, save_config, resolve, data_dir, RuntimeConfig
 from store import Store, Preferences
 
 ROOT = Path(__file__).resolve().parent
 config = load_config()
-store = Store(data_dir())
+store = Store(data_dir(), default_model=config.default_model)
 PRESETS = resolve(config.presets_dir)
 CUSTOM = ROOT / "voices"
-CACHE = data_dir() / "latents"
 DESIGNS = {"calm_male": ("男性・落ち着いた声", "落ち着いた中年男性の声。穏やかで明瞭な標準語。"), "calm_female": ("女性・落ち着いた声", "落ち着いた成人女性の声。穏やかで明瞭な標準語。"), "bright_male": ("男性・明るい声", "若い成人男性の声。明るく親しみやすい標準語。"), "bright_female": ("女性・明るい声", "若い成人女性の声。明るく親しみやすい標準語。")}
 DESIGN_DIR = data_dir() / "design-voices"
 DESIGN_DIR.mkdir(parents=True, exist_ok=True)
 CUSTOM.mkdir(exist_ok=True)
-CACHE.mkdir(parents=True, exist_ok=True)
-MODEL = resolve(config.model_path)
 state = {"phase": "loading", "message": "モデルを読み込んでいます", "busy": False}
 manager = RuntimeManager(config)
 gate = manager.lock
@@ -72,36 +70,40 @@ def resolve_voice(voice):
     return path
 
 
-def ensure_design(voice):
+def ensure_design(voice, model_id=None):
     path = resolve_voice(voice)
     if voice.startswith("design:") and not path.exists():
         name = voice.partition(":")[2]
         with gate:
-            manager.activate("irodori")
-            result = manager.workers["irodori"].call("synthesize", {
+            model_id = model_id or store.preferences().model_id
+            if not manager.capabilities(model_id)["voice_design"]:
+                raise ValueError("選択モデルは標準音声の新規作成に対応していません。録音を登録してください")
+            manager.activate(model_id)
+            result = manager.call(model_id, "design", {
                 "text": DESIGN_TRANSCRIPT,
-                "design_caption": DESIGNS[name][1], "seed": 20261004 + list(DESIGNS).index(name)})
-            path.write_bytes(base64.b64decode(result["audio"]))
+                "style": name, "seed": 20261004 + list(DESIGNS).index(name)})
+            raw = base64.b64decode(result["audio"])
+            duration = sf.info(io.BytesIO(raw)).duration
+            limits = manager.capabilities(model_id)["reference"]
+            if not limits.get("min_seconds", 0) <= duration <= limits.get("max_seconds", 30):
+                raise ValueError("標準音声が参照時間の条件を満たしません。再実行するか録音を登録してください")
+            temp = path.with_suffix(".tmp")
+            temp.write_bytes(raw)
+            os.replace(temp, path)
     return path
-
-
-def generate(text, voice, steps, speed):
-    path = ensure_design(voice)
-    manager.activate("irodori")
-    result = manager.workers["irodori"].call("synthesize", {"text":text,"reference_path":str(path),"steps":steps,"speed":speed},timeout=60)
-    return base64.b64decode(result["audio"]),result["headers"]
 
 
 def initialize():
     try:
         with gate:
             prefs = store.preferences()
-            engine = prefs.japanese_engine if prefs.mode == "ja" else "omnivoice"
-            manager.activate(engine)
-            available = {v["id"] for v in voices()}
-            voice = store.preferences().voice
-            if engine == "irodori":
-                generate("こんにちは。",voice if voice in available else "design:calm_male",4,1.)
+            manager.activate(prefs.model_id)
+        # Reuse the explicit preparation path; never create/replace a user's reference.
+        # Missing references must not prevent the model, settings or manuals from opening.
+        try:
+            service.prepare_voice(prefs.voice, prefs.model_id)
+        except (ValueError, HTTPException):
+            pass
         state.update(phase="ready",message="準備完了")
     except Exception:
         state.update(phase="error",message="モデルを読み込めません。環境設定を確認してください")
@@ -144,67 +146,15 @@ def index():
 
 @app.get("/api/status")
 def status():
-    return {"app": "echo-ego-prototype", **state, "model": "Irodori-TTS-v4.1-Small-MF", "precision": config.precision.upper(), "device": config.device, "watermark": bool(manager.status["irodori"].get("watermark")), "steps": 4, "voices": voices()}
-
-
-class Speech(BaseModel):
-    text: str = Field(min_length=1, max_length=160)
-    voice: str
-    steps: int = Field(default=4)
-    speed: float = Field(default=1.0, ge=0.7, le=1.5)
-    use_cache: bool = False
-
-
-def spoken_text(text):
-    value = dictionary.get()
-    return apply_reading(text,value["entries"],value["revision"])["speech_text"]
-
-
-def speech_key(payload, text):
-    path = resolve_voice(payload.voice)
-    voice_version = path.stat().st_mtime_ns if path.exists() else DESIGNS[payload.voice.partition(":")[2]][1]
-    identity = [text, payload.voice, voice_version, payload.steps, payload.speed, str(MODEL), MODEL.stat().st_mtime_ns if MODEL.exists() else 0, config.model_dump(), bool(manager.status["irodori"].get("watermark")), "cache-v1"]
-    return hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    model_id = store.preferences().model_id
+    model = manager.model(model_id)
+    return {"app": "echo-ego-prototype", **state, "model": model.label, "model_id":model_id,
+        "precision":model.precision, "device":model.device, "voices":voices()}
 
 
 @app.post("/api/speech")
-def speak(payload: Speech):
-    try:
-        text = spoken_text(payload.text.strip())
-    except ValueError as exc:
-        raise HTTPException(422,str(exc))
-    if len(text) > 320:
-        raise HTTPException(400, "読み辞書の適用後の文が長すぎます")
-    if not re.search(r"[\w\u3040-\u30ff\u3400-\u9fff]", text):
-        raise HTTPException(400, "読み上げる文字を入力してください")
-    resolve_voice(payload.voice)
-    if payload.steps not in {4, 6, 8}:
-        raise HTTPException(400, "ステップ数が無効です")
-    key = speech_key(payload, text) if payload.use_cache else None
-    cached = store.cache(key) if key else None
-    if cached:
-        audio, headers = cached
-        return Response(audio, media_type="audio/wav", headers={**headers, "X-Cached": "1"})
-    if state["phase"] != "ready":
-        raise HTTPException(503, state["message"])
-    if not gate.acquire(blocking=False):
-        raise HTTPException(409, "前の音声を生成中です。少し待って再送してください")
-    state["busy"] = True
-    try:
-        audio, headers = generate(text, payload.voice, payload.steps, payload.speed)
-        if key:
-            # Designed reference is created on first generation; key must use its new version.
-            store.save_cache(speech_key(payload, text), audio, headers)
-        headers["X-Cached"] = "0"
-        return Response(audio, media_type="audio/wav", headers=headers)
-    except HTTPException:
-        raise
-    except Exception:
-        logging.exception("Synthesis failed")
-        raise HTTPException(500, "音声生成に失敗しました。ログを確認してください")
-    finally:
-        state["busy"] = False
-        gate.release()
+def retired_speech():
+    raise HTTPException(410, "旧発話APIは廃止しました。/api/v2/speech-jobsを使用してください")
 
 
 @app.post("/api/voices")
@@ -257,12 +207,12 @@ def delete_voice(voice_id: str):
         raise HTTPException(409, "生成完了後に削除してください")
     try:
         service.jobs.cancel_voice(voice_id)
-        voice_hash = hashlib.sha256(path.read_bytes()).hexdigest()
         path.unlink()
         with store.connect() as db:
             db.execute("DELETE FROM voice_profiles WHERE id=?",(voice_id,))
-        service.preparations.pop(voice_id,None)
-        for metadata in (data_dir()/"voice-prompts"/"omnivoice").glob("*.json"):
+        for key in list(service.preparations):
+            if key.endswith(":" + voice_id): service.preparations.pop(key, None)
+        for metadata in (data_dir()/"voice-prompts").glob("*/*.json"):
             owners = json.loads(metadata.read_text(encoding="utf-8"))
             if voice_id in owners:
                 owners.remove(voice_id)
@@ -271,12 +221,14 @@ def delete_voice(voice_id: str):
                 else:
                     metadata.with_suffix(".pt").unlink(missing_ok=True)
                     metadata.unlink()
-        manager.workers["omnivoice"].stop()
-        if manager.active == "omnivoice": manager.active = None
+        for model_id, worker in manager.workers.items():
+            worker.stop()
+            manager.status[model_id] = {"phase":"idle", "message":"未読込"}
+        manager.active = None
         store.remove_voice(voice_id)
-        # Latents hold biometric voice features. Clear them with the recording.
-        latent_key = hashlib.sha256((voice_hash + config.model_path + config.codec_repo).encode()).hexdigest()
-        (CACHE/(latent_key+".pt")).unlink(missing_ok=True)
+        # Old Irodori features contain biometric data; clear derived legacy features.
+        for latent in (data_dir()/"latents").glob("*.pt"):
+            latent.unlink()
     finally:
         gate.release()
     return {"ok": True}
@@ -293,6 +245,14 @@ def preferences():
 
 @app.put("/api/preferences")
 def save_preferences(payload: Preferences, request: Request):
+    try:
+        manager.model(payload.model_id)
+        for model_id, settings in payload.model_settings.items():
+            if model_id not in config.models: continue
+            caps = manager.capabilities(model_id)
+            manager.validate(model_id, None, caps["languages"][0], settings, payload.speed if model_id==payload.model_id else 1.)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         current = dictionary.get(db)
@@ -326,6 +286,8 @@ class HistoryItem(BaseModel):
     reading_revision: int | None = None
     model_identity: dict | None = None
     voice_revision: int | None = None
+    translation_identity: dict | None = None
+    generation_settings: dict | None = None
 
 
 @app.get("/api/history")
@@ -380,11 +342,20 @@ def clear_phrase_cache():
 @app.get("/api/config")
 def runtime_config():
     hardware = next((value["hardware"] for value in manager.status.values() if value.get("hardware")), {"cuda":False,"gpu":None,"vram_gb":0})
-    return {"config":config.model_dump(),"saved":load_config().model_dump(),"diagnostics":{**hardware,"model_exists":MODEL.is_file(),"source_exists":resolve(config.source_path).is_dir(),"data_dir":str(data_dir())}}
+    return {"config":config.model_dump(),"saved":load_config().model_dump(),"diagnostics":{**hardware,"model_exists":manager.installed(store.preferences().model_id),"data_dir":str(data_dir())}}
 
 
 @app.put("/api/config")
 def update_runtime_config(payload: RuntimeConfig):
+    try:
+        for key, model in payload.models.items():
+            from speech.backends import get_backend
+            backend = get_backend(model.backend)
+            backend.validate(None, backend.capabilities["languages"][0], model.defaults, 1.)
+        if store.preferences().model_id not in payload.models:
+            raise ValueError("選択中の音声モデルは削除できません")
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
     save_config(payload)
     return {"ok": True, "message": "設定を保存しました。stop.batで終了してstart.batで起動すると反映されます。"}
 
@@ -438,9 +409,17 @@ async def job_error(request, exc):
     return JSONResponse({"detail":str(exc)},status_code=exc.status)
 
 
+@app.exception_handler(BackendFailure)
+async def backend_error(request, exc):
+    return JSONResponse({"detail":str(exc),"code":exc.code},status_code=503)
+
+
+@app.get("/api/v2/models")
 @app.get("/api/v2/engines")
 def engines():
-    return {kind:{**manager.status[kind],"installed":manager.installed(kind),"languages":["ja"] if kind=="irodori" else ["ja","en"],"stream":False} for kind in manager.workers}
+    return {key:{**manager.status[key],"installed":manager.installed(key),
+        **manager.capabilities(key), "label":model.label, "device":model.device,
+        "defaults":model.defaults} for key,model in config.models.items()}
 
 
 @app.get("/api/v2/reading-dictionary")
@@ -486,8 +465,9 @@ def create_job(value: SpeechRequest):
 
 
 @app.get("/api/v2/speech-jobs/{job_id}")
-def get_job(job_id: str):
-    return service.public_job(service.jobs.get(job_id))
+def get_job(job_id: str, after_state: str | None = Query(default=None,max_length=32), wait_ms: int = Query(default=0,ge=0,le=1000)):
+    value = service.jobs.wait(job_id,after_state,wait_ms/1000) if after_state and wait_ms else service.jobs.get(job_id)
+    return service.public_job(value)
 
 
 @app.get("/api/v2/speech-jobs/{job_id}/audio")
@@ -507,13 +487,25 @@ def cancel_client(client_id: str):
 
 
 @app.get("/api/v2/voices/{voice_id}/reference")
-def voice_reference(voice_id: str):
+def voice_reference(voice_id: str, model_id: str | None = None):
     path = resolve_voice(voice_id)
     profile = service.profile(voice_id)
     changed = bool(profile.get("wav_sha256") and path.exists() and
                    profile["wav_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest())
+    model_id = model_id or store.preferences().model_id
+    try: manager.model(model_id)
+    except ValueError as exc: raise HTTPException(422,str(exc))
+    message = ""
+    valid = False
+    try:
+        if changed: raise ValueError("録音が変更されています。参照設定を作り直してください")
+        if not path.exists(): raise ValueError("この声は未作成です")
+        manager.validate(model_id, {**profile,"reference_path":str(path)}, profile["reference_language"], {}, 1.)
+        valid = True
+    except ValueError as exc:
+        message = str(exc)
     return {**profile,"duration_seconds":sf.info(path).duration if path.exists() else None,
-            "reference_audio_changed":changed}
+            "reference_audio_changed":changed,"valid_for_model":valid,"model_id":model_id,"validation_message":message}
 
 
 @app.put("/api/v2/voices/{voice_id}/reference")
@@ -523,10 +515,10 @@ def save_reference(voice_id: str,value: VoiceReference):
 
 
 @app.post("/api/v2/voices/{voice_id}/auto-reference",status_code=202)
-def auto_reference(voice_id: str,value: AutoReference):
+def auto_reference(voice_id: str,value: AutoReference,model_id: str | None = None):
     try:
-        ensure_design(voice_id)
-        return service.transcribe_reference(voice_id,value)
+        ensure_design(voice_id,model_id)
+        return service.transcribe_reference(voice_id,value,model_id)
     except ValueError as exc:
         if isinstance(exc,JobError): raise
         raise HTTPException(422,str(exc))
@@ -539,22 +531,25 @@ def auto_reference_status(voice_id: str):
 
 
 @app.post("/api/v2/voices/{voice_id}/standard-reference")
-def standard_reference(voice_id: str):
+def standard_reference(voice_id: str,model_id: str | None = None):
     if voice_id not in {"design:"+name for name in DESIGNS}:
         raise HTTPException(400,"標準の声を選択してください")
-    ensure_design(voice_id)
-    return voice_reference(voice_id)
+    try:
+        ensure_design(voice_id,model_id)
+        return voice_reference(voice_id,model_id)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
 
 
 @app.post("/api/v2/voices/{voice_id}/prepare",status_code=202)
-def prepare_reference(voice_id: str):
-    try: return service.prepare_voice(voice_id)
+def prepare_reference(voice_id: str, model_id: str | None = None):
+    try: return service.prepare_voice(voice_id, model_id)
     except ValueError as exc:
         if isinstance(exc,JobError): raise
         raise HTTPException(422,str(exc))
 
 
 @app.get("/api/v2/voices/{voice_id}/preparation")
-def reference_status(voice_id: str):
-    resolve_voice(voice_id)
-    return service.preparations.get(voice_id,{"state":"unprepared"})
+def reference_status(voice_id: str, model_id: str | None = None):
+    try: return service.preparation_status(voice_id, model_id)
+    except ValueError as exc: raise HTTPException(422,str(exc))

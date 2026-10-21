@@ -21,6 +21,7 @@ class Jobs:
     def __init__(self, execute):
         self.execute = execute
         self.lock = threading.RLock()
+        self.changed = threading.Condition(self.lock)
         self.items = OrderedDict()
         self.requests = {}
         self.queue = queue.Queue()
@@ -91,11 +92,25 @@ class Jobs:
                 raise JobError(409,"音声を生成中です")
             return job["audio"], dict(job["headers"])
 
+    def wait(self, key, after_state, timeout=1.):
+        """Return immediately on a state change; no missed completion between GETs."""
+        deadline = time.monotonic() + timeout
+        with self.changed:
+            value = self.get(key)
+            while value["state"] == after_state and value["state"] not in TERMINAL and not self.closed:
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    break
+                self.changed.wait(remaining)
+                value = self.get(key)
+            return value
+
     def cancel(self, key):
         with self.lock:
             if key in self.items:
                 self.items[key]["state"] = "cancelled"
                 self.items[key].pop("audio",None)
+                self.changed.notify_all()
         return {"ok":True}
 
     def cancel_client(self, client_id):
@@ -118,6 +133,7 @@ class Jobs:
             if state:
                 job["state"] = state
             job.update(values)
+            self.changed.notify_all()
             return True
 
     def commit(self, job, audio, headers, save_cache=None):
@@ -127,6 +143,7 @@ class Jobs:
             if save_cache:
                 save_cache()
             job.update(state="ready",audio=audio,headers=headers)
+            self.changed.notify_all()
             return True
 
     def _loop(self):
@@ -142,9 +159,10 @@ class Jobs:
                 self.execute(job)
             except Exception as exc:
                 message = str(exc) if isinstance(exc,ValueError) else "音声処理に失敗しました。環境と参照音声を確認してください"
-                self.update(job,"failed",error={"code":"speech_failed","message":message,"stage":job["state"],"retryable":True})
+                self.update(job,"failed",error={"code":getattr(exc,"code","invalid_input" if isinstance(exc,ValueError) else "speech_failed"),"message":message if isinstance(exc,ValueError) or hasattr(exc,"code") else "音声処理に失敗しました。環境と参照音声を確認してください","stage":job["state"],"retryable":getattr(exc,"retryable",not isinstance(exc,ValueError))})
 
     def close(self):
         with self.lock:
             self.closed = True
+            self.changed.notify_all()
         self.queue.put(None)

@@ -1,3 +1,5 @@
+> 過去の設計・検証記録です。2026-10-22以降の構成は[TTS設計](TTS_BACKEND_DESIGN.md)と[検証記録](TTS_BACKEND_VALIDATION.md)を参照してください。
+
 # OmniVoice参照設定の自動入力（2026-10-21）
 
 ## 変更

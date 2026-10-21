@@ -1,3 +1,5 @@
+> 過去の設計・検証記録です。2026-10-22以降の構成は[TTS設計](TTS_BACKEND_DESIGN.md)と[検証記録](TTS_BACKEND_VALIDATION.md)を参照してください。
+
 # OmniVoice・読み辞書 実装記録
 
 2026-10-19。ローカルでの実装・検証記録。Irodoriとの実聴による優劣判定は未実施。

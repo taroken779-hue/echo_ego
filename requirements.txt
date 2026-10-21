@@ -1,4 +1,4 @@
-# Application dependencies; Irodori's inference dependencies use its pinned uv.lock.
+# Controller-only dependencies. Model environments are installed separately.
 fastapi==0.129.2
 uvicorn==0.41.0
 python-multipart==0.0.22

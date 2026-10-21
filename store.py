@@ -2,7 +2,7 @@
 import json
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
@@ -22,11 +22,10 @@ class Reading(BaseModel):
 
 class Preferences(BaseModel):
     mode: Literal["ja", "ja_to_en"] = "ja"
-    japanese_engine: Literal["irodori", "omnivoice"] = "irodori"
-    omnivoice_steps: Literal[16, 32] = 32
+    model_id: str = "omnivoice"
+    model_settings: dict[str, dict] = Field(default_factory=dict)
     voice: str = "design:calm_male"
-    speed: float = Field(default=1, ge=.7, le=1.5)
-    steps: int = Field(default=4, ge=4, le=8)
+    speed: float = Field(default=1, gt=0, le=3)
     volume: float = Field(default=.8, ge=0, le=1)
     output_device: str = ""
     history_enabled: bool = False
@@ -36,10 +35,21 @@ class Preferences(BaseModel):
     phrases: list[Phrase] = Field(default_factory=lambda: [Phrase(id="yes", label="はい、わかりました", text="はい、わかりました。"), Phrase(id="thanks", label="ありがとうございます", text="ありがとうございます。"), Phrase(id="wait", label="少し待ってください", text="少し待ってください。")], max_length=9)
     dictionary: list[Reading] = Field(default_factory=list, max_length=100)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate(cls, value):
+        if not isinstance(value, dict):
+            return value
+        value = dict(value)
+        if "model_id" not in value:
+            old = value.get("japanese_engine", "omnivoice")
+            value["model_id"] = "omnivoice" if old == "irodori" else old
+        if "model_settings" not in value:
+            value["model_settings"] = {"omnivoice": {"num_step": value.get("omnivoice_steps", 32)}}
+        return value
+
     @model_validator(mode="after")
     def validate_options(self):
-        if self.steps not in {4, 6, 8}:
-            raise ValueError("ステップは4・6・8を選択してください")
         if len({p.id for p in self.phrases}) != len(self.phrases):
             raise ValueError("定型句IDが重複しています")
         if len({r.surface for r in self.dictionary}) != len(self.dictionary):
@@ -48,8 +58,9 @@ class Preferences(BaseModel):
 
 
 class Store:
-    def __init__(self, folder):
+    def __init__(self, folder, default_model="omnivoice"):
         self.folder = Path(folder)
+        self.default_model = default_model
         self.folder.mkdir(parents=True, exist_ok=True)
         self.path = self.folder / "echo-ego.sqlite3"
         with self.connect() as db:
@@ -59,6 +70,19 @@ class Store:
             CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL, audio BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS cache (id TEXT PRIMARY KEY, used_at REAL NOT NULL, headers TEXT NOT NULL, audio BLOB NOT NULL);
             """)
+        self.migrate_preferences()
+
+    def migrate_preferences(self):
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM settings WHERE id=1").fetchone()
+        if row and "model_id" not in json.loads(row[0]):
+            backup = self.folder / "echo-ego.before-backends.sqlite3"
+            if not backup.exists():
+                with closing(sqlite3.connect(self.path)) as source, closing(sqlite3.connect(backup)) as dest:
+                    source.backup(dest)
+            payload = Preferences.model_validate_json(row[0]).model_dump_json()
+            with self.connect() as db:
+                db.execute("UPDATE settings SET payload=? WHERE id=1", (payload,))
 
     @contextmanager
     def connect(self):
@@ -74,7 +98,7 @@ class Store:
     def preferences(self):
         with self.connect() as db:
             row = db.execute("SELECT payload FROM settings WHERE id=1").fetchone()
-        return Preferences.model_validate_json(row[0]) if row else Preferences()
+        return Preferences.model_validate_json(row[0]) if row else Preferences(model_id=self.default_model)
 
     def save_preferences(self, prefs):
         with self.connect() as db:

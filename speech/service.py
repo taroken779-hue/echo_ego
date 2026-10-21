@@ -5,9 +5,10 @@ from pathlib import Path
 import threading
 import time
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from reading_dictionary import apply, safe_text
 from speech.jobs import Jobs, JobError
+from speech.errors import ReferenceNotReady
 from speech.reference import DESIGN_TRANSCRIPT
 
 
@@ -16,28 +17,35 @@ class SpeechRequest(BaseModel):
     client_id: str = Field(min_length=1,max_length=64,pattern=r"^[\w-]+$")
     request_id: str = Field(min_length=1,max_length=64,pattern=r"^[\w-]+$")
     mode: Literal["ja","ja_to_en"] = "ja"
-    engine: Literal["irodori","omnivoice"] | None = None
+    engine: str | None = None
+    model_id: str | None = None
     voice_id: str = Field(min_length=1,max_length=100)
     text: str = Field(min_length=1,max_length=160)
-    speed: float = Field(default=1,ge=.7,le=1.5)
+    speed: float = Field(default=1,gt=0,le=3)
     engine_settings: dict = Field(default_factory=dict)
     use_phrase_cache: bool = False
     audition: bool = False
     draft_entries: list[dict] | None = Field(default=None,max_length=100)
 
+    @model_validator(mode="after")
+    def aliases(self):
+        if self.engine and self.model_id and self.engine != self.model_id:
+            raise ValueError("engineとmodel_idが一致しません")
+        return self
+
 
 class VoiceReference(BaseModel):
-    reference_transcript: str = Field(min_length=1,max_length=500)
+    reference_transcript: str = Field(default="",max_length=500)
     reference_language: Literal["ja","en"] = "ja"
-    clip_start_ms: int = Field(default=0,ge=0,le=27000)
-    clip_end_ms: int = Field(ge=3000,le=30000)
+    clip_start_ms: int = Field(default=0,ge=0,le=29999)
+    clip_end_ms: int = Field(ge=1,le=30000)
     wav_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class AutoReference(BaseModel):
     reference_language: Literal["ja", "en"] = "ja"
-    clip_start_ms: int | None = Field(default=None, ge=0, le=27000)
-    clip_end_ms: int | None = Field(default=None, ge=3000, le=30000)
+    clip_start_ms: int | None = Field(default=None, ge=0, le=29999)
+    clip_end_ms: int | None = Field(default=None, ge=1, le=30000)
 
 
 class SpeechService:
@@ -59,7 +67,7 @@ class SpeechService:
         if voice.startswith("design:"):
             import soundfile as sf
             path = self.resolve_voice(voice)
-            if path.is_file() and 3 <= sf.info(path).duration <= 10:
+            if path.is_file() and 0 < sf.info(path).duration <= 30:
                 return {"revision":0,"reference_transcript":DESIGN_TRANSCRIPT,"reference_language":"ja",
                         "clip_start_ms":0,"clip_end_ms":int(sf.info(path).duration*1000),
                         "wav_sha256":hashlib.sha256(path.read_bytes()).hexdigest(),"source":"standard"}
@@ -71,9 +79,10 @@ class SpeechService:
         info = sf.info(path)
         if value.wav_sha256 and hashlib.sha256(path.read_bytes()).hexdigest() != value.wav_sha256:
             raise ValueError("録音が変更されました。自動入力をやり直してください")
-        if not 3000 <= value.clip_end_ms-value.clip_start_ms <= 10000 or value.clip_end_ms > info.duration*1000+1:
-            raise ValueError("録音内の3〜10秒の区間と、その区間に合う文字起こしを指定してください")
-        safe_text(value.reference_transcript)
+        if not 0 <= value.clip_start_ms < value.clip_end_ms <= info.duration*1000+1:
+            raise ValueError("参照区間は録音の範囲内で指定してください")
+        if value.reference_transcript:
+            safe_text(value.reference_transcript)
         value = value.model_copy(update={"wav_sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -81,14 +90,17 @@ class SpeechService:
             db.execute("INSERT OR REPLACE INTO voice_profiles VALUES (?,?,?)",(voice,row[0]+1 if row else 1,value.model_dump_json()))
         return self.profile(voice)
 
-    def transcribe_reference(self, voice, value):
+    def transcribe_reference(self, voice, value, model_id=None):
         path = self.resolve_voice(voice)
         if not path.is_file():
             raise ValueError("録音がありません")
         ref = {"reference_path":str(path),"wav_sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
         if (value.clip_start_ms is None) != (value.clip_end_ms is None):
             raise ValueError("開始と終了を両方指定してください")
-        payload = {"reference_path":ref["reference_path"],"wav_sha256":ref["wav_sha256"],**value.model_dump()}
+        limits = self.manager.capabilities(model_id or self.store.preferences().model_id)["reference"]
+        payload = {"reference_path":ref["reference_path"],"wav_sha256":ref["wav_sha256"],**value.model_dump(),
+            "min_seconds":limits.get("min_seconds",1),"max_seconds":limits.get("max_seconds",30),
+            "asr_identity":self.manager.auxiliary_identity("transcribe")}
         key = hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
         with self.preparation_lock:
             old = self.transcriptions.get(voice,{})
@@ -104,7 +116,9 @@ class SpeechService:
         def run():
             try:
                 with self.manager.lock:
-                    result = self.manager.workers["omnivoice"].call("transcribe-reference",payload,timeout=300)
+                    if payload["asr_identity"] != self.manager.auxiliary_identity("transcribe"):
+                        raise ValueError("文字起こしモデルの版が変わりました。再実行してください")
+                    result = self.manager.auxiliary.call("transcribe-reference",payload,timeout=300)
                     if hashlib.sha256(path.read_bytes()).hexdigest() != payload["wav_sha256"]:
                         raise ValueError("録音が変更されました。自動入力をやり直してください")
                     # Validate the returned draft without writing it into the saved profile.
@@ -127,50 +141,64 @@ class SpeechService:
             raise ValueError("録音が変更されました。参照設定を作り直してください")
         return {**profile,"voice_id":voice,"reference_path":str(path),"wav_sha256":digest}
 
-    def prepare_voice(self, voice):
+    def prepare_voice(self, voice, model_id=None):
+        model_id = model_id or self.store.preferences().model_id
+        if not self.manager.capabilities(model_id)["reference"]["required"]:
+            return {"state":"ready", "model_id":model_id,"required":False}
         ref = self.reference(voice)
-        if not ref["reference_transcript"]:
-            raise ValueError("参照音声の文字起こしを保存してください")
-        version = self.manager.identity("omnivoice")
+        language = ref["reference_language"]
+        settings = self.manager.validate(model_id, ref, language, {}, 1.)
+        version = self.manager.identity(model_id)
         key = hashlib.sha256(json.dumps([ref,version],sort_keys=True).encode()).hexdigest()
+        preparation_id = model_id + ":" + voice
         with self.preparation_lock:
-            old = self.preparations.get(voice,{})
+            old = self.preparations.get(preparation_id,{})
             if old.get("key")==key and old.get("state") in {"preparing","ready"}:
                 return dict(old)
-            item = {"state":"preparing","key":key,"voice_revision":ref["revision"]}
-            self.preparations[voice] = item
+            item = {"state":"preparing","key":key,"voice_revision":ref["revision"],"model_id":model_id}
+            self.preparations[preparation_id] = item
         def run():
             try:
                 with self.manager.lock:
-                    self.manager.activate("omnivoice")
-                    self.manager.workers["omnivoice"].call("prepare-voice",ref,timeout=120)
-                    self.manager.workers["omnivoice"].call("synthesize",{
+                    if self.manager.identity(model_id) != version:
+                        raise ValueError("モデルが変更されました")
+                    self.manager.activate(model_id)
+                    self.manager.call(model_id,"prepare-voice",ref,timeout=120)
+                    self.manager.call(model_id,"synthesize",{
                         **ref,"text":"こんにちは。" if ref["reference_language"]=="ja" else "Hello.",
-                        "language":ref["reference_language"],"steps":16,"speed":1.},timeout=60)
+                        "language":language,"settings":settings,"speed":1.},timeout=60)
                 item.update(state="ready")
             except Exception:
                 item.update(state="failed",message="声を準備できませんでした。環境・区間・文字起こしを確認してください")
         threading.Thread(target=run,daemon=True).start()
         return dict(item)
 
+    def preparation_status(self, voice, model_id=None):
+        model_id = model_id or self.store.preferences().model_id
+        self.manager.model(model_id)
+        if not self.manager.capabilities(model_id)["reference"]["required"]:
+            return {"state":"ready", "model_id":model_id,"required":False}
+        item = self.preparations.get(model_id + ":" + voice, {"state":"unprepared"})
+        if item.get("state") == "ready":
+            ref = self.reference(voice)
+            key = hashlib.sha256(json.dumps([ref,self.manager.identity(model_id)],sort_keys=True).encode()).hexdigest()
+            if key != item.get("key"):
+                return {"state":"unprepared", "model_id":model_id}
+        return dict(item)
+
     def snapshot(self,p):
         prefs = self.store.preferences()
-        engine = p["engine"] or (prefs.japanese_engine if p["mode"]=="ja" else "omnivoice")
-        if p["mode"]=="ja_to_en" and engine!="omnivoice":
-            raise ValueError("英語モードにはOmniVoiceを選択してください")
+        engine = p.get("model_id") or p.get("engine") or prefs.model_id
+        self.manager.model(engine)
         if not self.manager.installed(engine):
             raise JobError(503,"音声エンジンが未導入です。セットアップを実行してください")
-        settings = p["engine_settings"]
-        field = "steps" if engine=="irodori" else "num_step"
-        if set(settings)-{field}:
-            raise ValueError("音声エンジンの生成設定が無効です")
-        steps = settings.get(field,prefs.steps if engine=="irodori" else prefs.omnivoice_steps)
-        if type(steps) is not int or steps not in ({4,6,8} if engine=="irodori" else {16,32}):
-            raise ValueError("生成ステップ数が無効です")
         safe_text(p["text"])
-        ref = self.reference(p["voice_id"])
-        if engine=="omnivoice" and not ref["reference_transcript"]:
-            raise JobError(503,"声の管理でOmniVoice用の参照区間・文字起こしを保存し、準備してください")
+        ref = self.reference(p["voice_id"]) if self.manager.capabilities(engine)["reference"]["required"] else {"voice_id":p["voice_id"],"revision":0}
+        language = "ja" if p["mode"] == "ja" else "en"
+        try:
+            settings = self.manager.validate(engine, ref, language, {**prefs.model_settings.get(engine,{}), **p["engine_settings"]}, p["speed"])
+        except ReferenceNotReady as exc:
+            raise JobError(503,str(exc)) from None
         dictionary = self.dictionary.get()
         entries = dictionary["entries"]
         if p.get("draft_entries") is not None:
@@ -184,16 +212,16 @@ class SpeechService:
         return {"engine":engine,"model_identity":self.manager.identity(engine),"voice_id":p["voice_id"],"voice_revision":ref["revision"],
                 "reference":ref,"original_text":p["text"],"translated_text":None,
                 "speech_text":reading["speech_text"] if p["mode"]=="ja" else None,"target_language":"ja" if p["mode"]=="ja" else "en",
-                "reading_revision":reading["dictionary_revision"],"applied_entries":reading["applied_entries"],"steps":steps}
+                "reading_revision":reading["dictionary_revision"],"applied_entries":reading["applied_entries"],"settings":settings,
+                "translation_identity":self.manager.auxiliary_identity("translate") if language=="en" else None}
 
     def public_job(self,job):
         # Internal verified paths/transcripts stay in the controller/worker boundary.
         value = dict(job)
         value["snapshot"] = {k:v for k,v in job["snapshot"].items() if k not in {"reference","model_identity"}}
         identity = job["snapshot"]["model_identity"]
-        value["snapshot"]["model"] = {"engine":identity["engine"],"model_mtime":identity.get("model_mtime"),
-                                      "manifest":identity.get("manifest",{}),"precision":self.manager.config.precision if identity["engine"]=="irodori" else ("fp16" if self.manager.config.device=="cuda" else "fp32"),
-                                      "source_revision":identity.get("source_revision"),"worker_sha256":identity.get("worker_sha256")}
+        value["snapshot"]["model"] = {key:value for key,value in identity.items() if key != "model_path"}
+        value["snapshot"]["translation_identity"] = {key:value for key,value in (job["snapshot"].get("translation_identity") or {}).items() if key != "path"}
         return value
 
     def execute(self,job):
@@ -206,15 +234,16 @@ class SpeechService:
                 raise ValueError("モデルの版が変わりました。新しく送信してください")
             if snap["target_language"]=="en":
                 self.jobs.update(job,"translating")
-                # Translation is CPU-only in the isolated OmniVoice process.
-                translated = self.manager.workers["omnivoice"].call("translate",{"text":snap["original_text"]},timeout=60)["text"]
+                if snap["translation_identity"] != self.manager.auxiliary_identity("translate"):
+                    raise ValueError("翻訳モデルの版が変わりました。新しく送信してください")
+                translated = self.manager.auxiliary.call("translate",{"text":snap["original_text"]},timeout=60)["text"]
                 safe_text(translated)
                 with self.jobs.lock:
                     if job["state"]=="cancelled":
                         return
                     snap.update(translated_text=translated,speech_text=translated)
                     job["timing"]["translation_ms"] = (time.perf_counter()-start)*1000
-            key = hashlib.sha256(json.dumps([snap,p["speed"],"speech-v2"],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+            key = hashlib.sha256(json.dumps([snap,p["speed"],"speech-backend-v1"],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
             cached = self.store.cache(key) if p["use_phrase_cache"] else None
             if cached:
                 audio,headers = cached
@@ -225,8 +254,8 @@ class SpeechService:
             self.manager.activate(snap["engine"])
             if not self.jobs.update(job,"synthesizing"):
                 return
-            result = self.manager.workers[snap["engine"]].call("synthesize",{
-                **snap["reference"],"text":snap["speech_text"],"language":snap["target_language"],"steps":snap["steps"],"speed":p["speed"]},timeout=60)
+            result = self.manager.call(snap["engine"],"synthesize",{
+                **snap["reference"],"text":snap["speech_text"],"language":snap["target_language"],"settings":snap["settings"],"speed":p["speed"]},timeout=60)
             audio,headers = base64.b64decode(result["audio"]),{**result["headers"],"X-Cached":"0"}
             job["timing"]["processing_ms"] = (time.perf_counter()-start)*1000
             self.jobs.commit(job,audio,headers, (lambda:self.store.save_cache(key,audio,headers)) if p["use_phrase_cache"] else None)

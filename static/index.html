@@ -12,7 +12,7 @@
   <div class="screen-heading"><span class="workshop-caption">YOUR WORDS, YOUR VOICE</span><h1 id="speak-title">話したいことを、ここに。</h1><p>文を入力してEnter。選んだ声で発話します。</p></div>
   <section class="composer" aria-label="発話の入力">
     <label for="text" class="field-title">話す内容</label>
-    <div class="controls"><label>発話モード<select id="speech-mode"><option value="ja">日本語</option><option value="ja_to_en">英語に翻訳</option></select></label><label>音声エンジン<select id="speech-engine"><option value="irodori">Irodori（日本語）</option><option value="omnivoice">OmniVoice（日英）</option></select></label></div><textarea id="text" placeholder="こんにちは。今日はいい天気ですね。" autofocus></textarea>
+    <div class="controls"><label>発話モード<select id="speech-mode"><option value="ja">日本語</option><option value="ja_to_en">英語に翻訳</option></select></label></div><textarea id="text" placeholder="こんにちは。今日はいい天気ですね。" autofocus></textarea>
     <div class="hint"><span>Enterで発話 · Shift＋Enterで改行</span><span id="count">0 / 160</span></div>
     <div class="controls"><label>声<select id="voice"></select></label><label>話す速さ<select id="speed"><option value="1">1.0倍</option><option value="1.2">1.2倍</option><option value="0.85">0.85倍</option></select></label></div>
     <div class="actions"><button id="speak" disabled><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#voice"></use></svg>発話する <span class="keycap" aria-hidden="true">↵</span></button><button id="stop" class="secondary" disabled><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#stop"></use></svg>停止</button><button id="upload-button" class="upload"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#upload"></use></svg>自分の声を登録</button><input id="upload" type="file" accept=".wav" hidden></div>
@@ -26,7 +26,7 @@
   <details class="details-panel"><summary><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#settings"></use></svg>応答時間の詳細・生成設定</summary><div class="detail-content">
     <div class="metrics"><div><span>音声受信まで</span><strong id="received">—<small> 秒</small></strong></div><div><span>音声先頭の無音目安</span><strong id="silence">—<small> 秒</small></strong></div></div>
     <p class="small">再生開始はブラウザーの再生スケジュールまでの時間です。先頭の無音と出力機器の遅延が加わります。</p>
-    <label class="advanced-label">生成ステップ<select id="steps"><option value="4">4 — 標準・高速</option><option value="6">6 — 比較用</option><option value="8">8 — 比較用</option></select></label><label>OmniVoice生成ステップ<select id="omni-steps"><option value="32">32 — 標準</option><option value="16">16 — 速度比較</option></select></label><p id="model" class="small">音声を準備しています</p>
+    <div id="model-settings"></div><p id="model" class="small">音声を準備しています</p>
   </div></details>
 </section>
 <section id="history-view" class="screen" aria-labelledby="history-title" hidden>
@@ -54,12 +54,12 @@
     <h2>読み辞書</h2><p class="small">表示する文章はそのまま、発話用の読みだけ置き換えます。</p><div id="dictionary-editor"></div><button id="dictionary-add" class="secondary">読みを追加</button><p class="small">長い語を優先し、一度だけ置換します。英語への翻訳には適用しません。読みはかなで入力してください。</p><label>確認する例文<input id="dictionary-example" value="日本橋で集合します。"></label><button id="dictionary-preview-button" class="secondary">未保存の読みを確認</button><button id="dictionary-audition" class="secondary">保存済み辞書で試聴</button><p id="dictionary-preview-result" role="status"></p>
     <div class="actions"><button id="save-settings">設定を保存</button></div><p id="settings-notice" role="status"></p>
   </section>
-  <details class="details-panel"><summary>Irodori-TTSの環境設定</summary><div class="detail-content"><p id="diagnostics"></p><p class="small">変更は保存してアプリを終了・起動すると反映されます。相対パスはEcho Egoフォルダーが基準です。</p>
-    <div id="runtime-fields"></div><label>実行先<select id="runtime-device"><option value="cuda">CUDA GPU（BF16）</option><option value="cpu">CPU（FP32・低速）</option></select></label>
+  <details class="details-panel"><summary>音声モデル・実行環境</summary><div class="detail-content"><p id="diagnostics"></p><p class="small">変更は保存してアプリを終了・起動すると反映されます。相対パスはEcho Egoフォルダーが基準です。</p>
+    <label>音声モデル<select id="model-selector"></select></label><p id="model-change-notice" class="small">モデルを変更すると声の再準備と定型句の再生成が必要な場合があります。</p><div id="runtime-fields"></div>
     <label class="check-label"><input id="runtime-preload" type="checkbox">起動時にモデルを読み込む</label><label class="check-label"><input id="runtime-offline" type="checkbox">オフラインで実行する（導入後）</label>
     <div class="actions"><button id="save-runtime">環境設定を保存</button><button id="load-runtime" class="secondary">モデルを読み込む</button><button id="shutdown" class="danger-outline">アプリを終了</button></div><p id="runtime-notice" role="status"></p>
   </div></details>
 </section>
-<section id="guide-view" class="screen" hidden aria-labelledby="guide-title"><div class="screen-heading"><span class="workshop-caption">WORKSHOP HANDBOOK</span><h1 id="guide-title">マニュアル</h1><p>操作・Irodori-TTSの導入・配布について確認できます。</p></div><div class="actions"><button data-manual="user">使い方</button><button data-manual="setup" class="secondary">Irodori-TTSの設定</button><button data-manual="omni" class="secondary">OmniVoice・英語・読み辞書</button><button data-manual="discord" class="secondary">Discord・VB-CABLE</button><button data-manual="release" class="secondary">GitHub配布</button></div><article id="manual-content" class="composer manual"></article></section>
+<section id="guide-view" class="screen" hidden aria-labelledby="guide-title"><div class="screen-heading"><span class="workshop-caption">WORKSHOP HANDBOOK</span><h1 id="guide-title">マニュアル</h1><p>操作・音声モデルの導入・配布について確認できます。</p></div><div class="actions"><button data-manual="user">使い方</button><button data-manual="setup" class="secondary">導入・モデルの設定</button><button data-manual="omni" class="secondary">OmniVoice・英語・読み辞書</button><button data-manual="discord" class="secondary">Discord・VB-CABLE</button><button data-manual="release" class="secondary">GitHub配布</button></div><article id="manual-content" class="composer manual"></article></section>
 <footer><span><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#lock"></use></svg>入力と音声は、このPC内で処理します。</span><span class="footer-signature">ECHO EGO / VOICE WORKSHOP</span></footer>
-</main><script src="/static/app.js?v=20261021-reference2"></script><script src="/static/features.js?v=20261021-reference2"></script></body></html>
+</main><script src="/static/app.js?v=20261022-latency1"></script><script src="/static/features.js?v=20261022-latency1"></script></body></html>

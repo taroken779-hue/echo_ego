@@ -1,3 +1,4 @@
+param([switch]$NoBrowser)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runtimeDir = Join-Path $projectRoot '.runtime'
@@ -8,7 +9,7 @@ $port = [int]$config.port
 $appUrl = 'http://127.0.0.1:' + $port
 try {
     $status = Invoke-RestMethod ($appUrl + '/api/status') -TimeoutSec 2
-    if ($status.app -eq 'echo-ego-prototype') { Start-Process $appUrl; exit 0 }
+    if ($status.app -eq 'echo-ego-prototype') { if (-not $NoBrowser) { Start-Process $appUrl }; exit 0 }
     throw 'Port is used by another application.'
 } catch {
     if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw 'Port is already in use. Stop that application first.' }
@@ -25,7 +26,7 @@ for ($attempt = 0; $attempt -lt 30; $attempt++) {
         $status = Invoke-RestMethod ($appUrl + '/api/status') -TimeoutSec 2
         if ($status.app -eq 'echo-ego-prototype') {
             Write-Host ('Echo Ego: ' + $appUrl + ' (model warms up in the background)')
-            Start-Process $appUrl
+            if (-not $NoBrowser) { Start-Process $appUrl }
             exit 0
         }
     } catch {}

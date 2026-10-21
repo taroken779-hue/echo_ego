@@ -38,6 +38,30 @@ class JobsTests(unittest.TestCase):
         job["snapshot"]["speech_text"]="changed"
         self.assertEqual(self.jobs.get(job["id"])["snapshot"]["speech_text"],"きょう")
 
+    def test_wait_observes_commit_and_already_completed_job(self):
+        job=self.submit();self.assertTrue(self.started.wait(1))
+        result=[];done=threading.Event()
+        def waiter():
+            result.append(self.jobs.wait(job["id"],"queued",1.));done.set()
+        thread=threading.Thread(target=waiter);thread.start()
+        self.assertFalse(done.wait(.02))
+        self.release.set()
+        self.assertTrue(done.wait(1))
+        thread.join()
+        self.assertEqual(result[0]["state"],"ready")
+        self.assertEqual(self.jobs.wait(job["id"],"queued",1.)["state"],"ready")
+
+    def test_wait_wakes_on_cancel_and_times_out_without_changing_job(self):
+        job=self.submit();self.assertTrue(self.started.wait(1))
+        self.assertEqual(self.jobs.wait(job["id"],"queued",.01)["state"],"queued")
+        result=[];done=threading.Event()
+        def waiter():
+            result.append(self.jobs.wait(job["id"],"queued",1.));done.set()
+        thread=threading.Thread(target=waiter);thread.start()
+        self.jobs.cancel(job["id"])
+        self.assertTrue(done.wait(1));thread.join()
+        self.assertEqual(result[0]["state"],"cancelled")
+
     def test_cancelled_backlog_is_bounded_and_does_not_kill_consumer(self):
         first=self.submit(0);self.assertTrue(self.started.wait(1))
         for i in range(1,225):

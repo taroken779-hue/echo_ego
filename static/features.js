@@ -7,6 +7,43 @@ async function api(path, options = {}) {
   return r.json();
 }
 function jsonRequest(method, data) { return {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)}; }
+function modelSettings() { return {...(preferences.model_settings?.[selectedEngine()] || {})}; }
+function renderModelControls() {
+  const selector = $('model-selector');
+  const options = Object.keys(engineStates);
+  if (!options.includes(selectedEngine())) options.push(selectedEngine());
+  if (selector.dataset.options !== options.join(',')) {
+    selector.replaceChildren(...options.map(id=>new Option(engineName(id),id)));
+    selector.dataset.options = options.join(',');
+  }
+  selector.value = selectedEngine();
+  const caps = currentCapabilities(), specSignature = JSON.stringify([selectedEngine(),caps.settings,caps.speed]);
+  if ($('model-settings').dataset.signature === specSignature) return;
+  $('model-settings').dataset.signature = specSignature; $('model-settings').replaceChildren();
+  for (const [key,spec] of Object.entries(caps.settings || {})) {
+    const label=document.createElement('label');label.textContent=spec.label || key;
+    const input=document.createElement(spec.enum ? 'select' : 'input');
+    if(spec.enum) input.append(...spec.enum.map(value=>new Option(String(value),String(value))));
+    else { input.type=spec.type==='boolean'?'checkbox':spec.type==='string'?'text':'number';if(spec.minimum!=null)input.min=spec.minimum;if(spec.maximum!=null)input.max=spec.maximum;input.step=spec.type==='integer'?'1':'any'; }
+    const value=modelSettings()[key] ?? caps.defaults?.[key] ?? spec.default;
+    if(spec.type==='boolean')input.checked=value;else input.value=String(value);
+    input.onchange=async()=>{preferences.model_settings ||= {};preferences.model_settings[selectedEngine()] ||= {};preferences.model_settings[selectedEngine()][key]=spec.type==='boolean'?input.checked:spec.type==='string'?input.value:Number(input.value);await rememberSpeechSettings();};
+    label.append(input);$('model-settings').append(label);
+  }
+  const speed=$('speed'),limits=caps.speed;
+  const values=limits ? [...new Set([.85,1,1.2,preferences.speed || 1,limits.minimum])].filter(v=>v>=limits.minimum && v<=limits.maximum).sort((a,b)=>a-b) : [1];
+  speed.replaceChildren(...values.map(v=>new Option(v+'倍',String(v))));
+  speed.value=String(values.includes(preferences.speed)?preferences.speed:values.includes(1)?1:values[0]);speed.disabled=!limits;
+}
+$('model-selector').onchange=async()=>{
+  stop();operationError='';omniReferenceReady=false;
+  const previous=preferences.model_id;
+  preferences.model_id=$('model-selector').value;
+  preferences.speed=1;
+  try { preferences=await api('/api/preferences',jsonRequest('PUT',preferences));$('model-change-notice').textContent='音声モデルを変更しました。声の準備と定型句の事前生成を確認してください。'; }
+  catch(e) {preferences.model_id=previous;$('model-change-notice').textContent=e.message;}
+  await refresh();renderVoices();
+};
 function showHistoryError(e) { $('history-notice').hidden = false; $('history-notice-text').textContent = '履歴の保存・削除に失敗しました：' + e.message; $('undo').hidden = true; }
 async function loadItemAudio(item) {
   if (!item.blob) {
@@ -19,7 +56,7 @@ async function persistItem(item) {
   if (!preferences.history_enabled || !item.blob) return;
   if (item.deleteTask) { await item.deleteTask; item.deleteTask = null; }
   const body = new FormData();
-  body.append('metadata', JSON.stringify({id:item.id,text:item.text,voice:item.voice,generatedAt:item.generatedAt,timing:item.timing,speech_text:item.speech_text,translated_text:item.translated_text,engine:item.engine,reading_revision:item.reading_revision,model_identity:item.model_identity,voice_revision:item.voice_revision}));
+  body.append('metadata', JSON.stringify({id:item.id,text:item.text,voice:item.voice,generatedAt:item.generatedAt,timing:item.timing,speech_text:item.speech_text,translated_text:item.translated_text,engine:item.engine,reading_revision:item.reading_revision,model_identity:item.model_identity,voice_revision:item.voice_revision,translation_identity:item.translation_identity,generation_settings:item.generation_settings}));
   body.append('file', item.blob, 'audio.wav');
   try { await api('/api/history', {method:'POST',body}); if (item.deleted) await api('/api/history/' + item.id, {method:'DELETE'}); }
   catch (e) { showHistoryError(e); }
@@ -50,7 +87,7 @@ function renderVoices() {
       try {
         await audioContext();
         const r = await fetch('/api/voices/' + voice.id + '/audio'); let bytes;
-        if (r.status === 404 && voice.kind === 'design') bytes = await apiAudio('/api/speech',{text:'こんにちは。どうぞよろしくお願いします。',voice:voice.id,steps:4,speed:1});
+        if (r.status === 404 && voice.kind === 'design') { await api('/api/v2/voices/'+encodeURIComponent(voice.id)+'/standard-reference',{method:'POST'}); const created = await fetch('/api/voices/'+encodeURIComponent(voice.id)+'/audio'); if(!created.ok) throw Error('標準音声を取得できません'); bytes = await created.arrayBuffer(); }
         else { if (!r.ok) { const d = await r.json(); throw Error(d.detail); } bytes = await r.arrayBuffer(); }
         const buffer = await ctx.decodeAudioData(bytes);
         if (token !== generation) return;
@@ -91,8 +128,8 @@ function addReading(reading = {id:crypto.randomUUID(),surface:'',reading:'',enab
 }
 function rowsValue(id) { return [...$(id).children].map(row => { const value={};row.querySelectorAll('[data-field]').forEach(input=>value[input.dataset.field]=input.type==='checkbox' ? input.checked : input.value);if(row.dataset.id)value.id=row.dataset.id;return value; }); }
 async function rememberSpeechSettings() {
-  preferences.mode = $('speech-mode').value; if (preferences.mode === 'ja') preferences.japanese_engine = $('speech-engine').value; preferences.omnivoice_steps = Number($('omni-steps').value);
-  if ($('voice').value) preferences.voice = $('voice').value; preferences.speed = Number($('speed').value); preferences.steps = Number($('steps').value);
+  preferences.mode = $('speech-mode').value;
+  if ($('voice').value) preferences.voice = $('voice').value; preferences.speed = Number($('speed').value);
   try { await api('/api/preferences', jsonRequest('PUT',preferences)); } catch(e) { $('message').textContent = '設定を保存できませんでした：' + e.message; }
 }
 function historyPolicy() { $('history-policy').textContent = preferences.history_enabled ? `音声込みでPC内に保存。最大${preferences.history_count}件・${preferences.history_days}日・${preferences.history_mb}MB。日時は日本時間です。` : '履歴のディスク保存はオフです。このタブ内に最大10件保持し、再読み込みで消えます。日時は日本時間です。'; }
@@ -112,8 +149,8 @@ async function preparePhrases() {
     for (const [index,phrase] of preferences.phrases.entries()) {
       if (!preparing || token !== generation || localBusy || playing || queue.length) break;
       $('cache-notice').textContent = `準備中 ${index + 1}/${preferences.phrases.length}：${phrase.label}`;
-      const engine = selectedEngine(); const job = await api('/api/v2/speech-jobs',jsonRequest('POST',{client_id:clientId,request_id:crypto.randomUUID(),text:phrase.text,voice_id:$('voice').value,mode:$('speech-mode').value,engine,speed:Number($('speed').value),engine_settings:engine==='irodori'?{steps:Number($('steps').value)}:{num_step:Number($('omni-steps').value)},use_phrase_cache:true}));
-      let result=job;while(!['ready','failed','cancelled'].includes(result.state)){if(!preparing || token!==generation){await api('/api/v2/speech-jobs/'+job.id,{method:'DELETE'});break;}await new Promise(r=>setTimeout(r,250));result=await api('/api/v2/speech-jobs/'+job.id);}if(result.state==='failed')throw Error(result.error.message);
+      const engine = selectedEngine(); const job = await api('/api/v2/speech-jobs',jsonRequest('POST',{client_id:clientId,request_id:crypto.randomUUID(),text:phrase.text,voice_id:$('voice').value,mode:$('speech-mode').value,engine,speed:Number($('speed').value),engine_settings:modelSettings(),use_phrase_cache:true}));
+      let result=job;while(!['ready','failed','cancelled'].includes(result.state)){if(!preparing || token!==generation){await api('/api/v2/speech-jobs/'+job.id,{method:'DELETE'});break;}result=await api('/api/v2/speech-jobs/'+job.id+'?after_state='+encodeURIComponent(result.state)+'&wait_ms=1000');}if(result.state==='failed')throw Error(result.error.message);
     }
     $('cache-notice').textContent = '準備を終了しました。生成済みの定型句は即座に再生できます。';
   } catch(e) { $('cache-notice').textContent = e.message; }
@@ -123,9 +160,10 @@ async function apiAudio(path,payload) { const r = await fetch(path,jsonRequest('
 let runtimeConfig;
 async function loadConfigUI() {
   const info = await api('/api/config'); runtimeConfig = info.saved;
-  const labels = {python_path:'Pythonのパス',source_path:'Irodori-TTSソースのパス',model_path:'MFモデルのパス',codec_repo:'Codec（Hugging Face IDまたはweights.pth）',presets_dir:'追加プリセットWAVのフォルダー'};
+  const labels = {python_path:'アプリ用Pythonのパス',presets_dir:'追加プリセットWAVのフォルダー'};
+  $('runtime-fields').replaceChildren();
   for (const [key,label] of Object.entries(labels)) { const l = document.createElement('label'); l.textContent = label; const input = document.createElement('input'); input.id = 'config-' + key; input.value = runtimeConfig[key]; l.append(input); $('runtime-fields').append(l); }
-  $('runtime-device').value = runtimeConfig.device; $('runtime-preload').checked = runtimeConfig.preload; $('runtime-offline').checked = runtimeConfig.offline;
+  $('runtime-preload').checked = runtimeConfig.preload; $('runtime-offline').checked = runtimeConfig.offline;
   $('diagnostics').textContent = `GPU：${info.diagnostics.gpu || '未検出'} / VRAM ${info.diagnostics.vram_gb}GB / モデル：${info.diagnostics.model_exists ? 'あり' : 'なし'} / 保存先：${info.diagnostics.data_dir}`;
 }
 async function loadManual(name) { try { const data=await api('/api/manual/'+name); $('manual-content').innerHTML = data.html; } catch(e) { $('manual-content').textContent=e.message; } }
@@ -160,17 +198,17 @@ $('record-save').onclick=reportTo('record-status',async()=>{if(!recordBlob)retur
 $('save-settings').onclick=saveSettings;$('phrase-add').onclick=()=>addPhrase();$('dictionary-add').onclick=()=>addReading();$('phrase-prepare').onclick=preparePhrases;
 $('cache-clear').onclick=reportTo('cache-notice',async()=>{await api('/api/cache',{method:'DELETE'});$('cache-notice').textContent='定型句の音声を削除しました。';});
 $('voice').addEventListener('change', async () => { operationError = ''; omniReferenceReady = false; updateStatus(); await updateVoiceNotice(); updateStatus(); });
-['voice','speed','steps'].forEach(id=>$(id).addEventListener('change',rememberSpeechSettings));
+['voice','speed'].forEach(id=>$(id).addEventListener('change',rememberSpeechSettings));
 $('volume').oninput=()=>{if(gain)gain.gain.value=Number($('volume').value);};
 $('output-devices').onclick=reportTo('output-notice',async()=>{await audioContext();if(!ctx.setSinkId){$('output-notice').textContent='このブラウザーでは出力先選択に対応していません。OSのサウンド設定を使ってください。';return;}let access;if(navigator.mediaDevices.selectAudioOutput){await navigator.mediaDevices.selectAudioOutput();}else{access=await navigator.mediaDevices.getUserMedia({audio:true});access.getTracks().forEach(t=>t.stop());}const devices=await navigator.mediaDevices.enumerateDevices();$('output-device').replaceChildren(new Option('標準の出力先',''));devices.filter(d=>d.kind==='audiooutput').forEach(d=>$('output-device').append(new Option(d.label,d.deviceId)));});
 $('test-output').onclick=reportTo('output-notice',async()=>{await audioContext();if(ctx.setSinkId)await ctx.setSinkId($('output-device').value);const tone=ctx.createOscillator();tone.frequency.value=440;const level=ctx.createGain();level.gain.value=0.08;tone.connect(level);level.connect(gain);tone.start();tone.stop(ctx.currentTime+.3);});
-$('save-runtime').onclick=reportTo('runtime-notice',async()=>{const next={...runtimeConfig};for(const key of ['python_path','source_path','model_path','codec_repo','presets_dir'])next[key]=$('config-'+key).value;next.device=$('runtime-device').value;next.precision=next.device==='cpu'?'fp32':'bf16';next.codec_precision='fp32';next.preload=$('runtime-preload').checked;next.offline=$('runtime-offline').checked;const result=await api('/api/config',jsonRequest('PUT',next));runtimeConfig=next;$('runtime-notice').textContent=result.message;});
+$('save-runtime').onclick=reportTo('runtime-notice',async()=>{const next={...runtimeConfig};for(const key of ['python_path','presets_dir'])next[key]=$('config-'+key).value;next.preload=$('runtime-preload').checked;next.offline=$('runtime-offline').checked;const result=await api('/api/config',jsonRequest('PUT',next));runtimeConfig=next;$('runtime-notice').textContent=result.message;});
 $('load-runtime').onclick=reportTo('runtime-notice',async()=>{await api('/api/runtime/load',{method:'POST'});await refresh();});
 $('shutdown').onclick=reportTo('runtime-notice',async()=>{stop();await api('/api/shutdown',{method:'POST'});$('runtime-notice').textContent='終了しました。start.batで再起動できます。';});
 document.querySelectorAll('[data-manual]').forEach(button=>button.onclick=()=>loadManual(button.dataset.manual));
 window.addEventListener('beforeunload',()=>{stream?.getTracks().forEach(track=>track.stop());});
 async function initializeUI() {
-  try { preferences=await api('/api/preferences');$('speech-mode').value=preferences.mode || 'ja';$('speech-engine').value=preferences.mode==='ja_to_en'?'omnivoice':preferences.japanese_engine || 'irodori';$('omni-steps').value=String(preferences.omnivoice_steps || 32);$('speed').value=String(preferences.speed);$('steps').value=String(preferences.steps);$('volume').value=preferences.volume;$('history-enabled').checked=preferences.history_enabled;$('history-limit').value=preferences.history_count;$('history-days').value=preferences.history_days;$('history-mb').value=preferences.history_mb;if(preferences.output_device)$('output-device').append(new Option('保存した出力先',preferences.output_device));$('output-device').value=preferences.output_device;
+  try { preferences=await api('/api/preferences');$('speech-mode').value=preferences.mode || 'ja';$('speed').value=String(preferences.speed);$('volume').value=preferences.volume;$('history-enabled').checked=preferences.history_enabled;$('history-limit').value=preferences.history_count;$('history-days').value=preferences.history_days;$('history-mb').value=preferences.history_mb;if(preferences.output_device)$('output-device').append(new Option('保存した出力先',preferences.output_device));$('output-device').value=preferences.output_device;
     preferences.phrases.forEach(addPhrase);dictionaryState=await api('/api/v2/reading-dictionary');dictionaryState.entries.forEach(addReading);renderPhrases();historyPolicy();
     if(preferences.history_enabled)history.push(...await api('/api/history'));
     await loadConfigUI();await loadManual('user');
@@ -180,10 +218,13 @@ async function initializeUI() {
 initializeUI();
 
 function referenceEditor(voice) {
-  const details = document.createElement('details');const summary=document.createElement('summary');summary.textContent='OmniVoice用の声を準備（Irodori-TTSとは別設定）';details.append(summary);
+  const modelId=selectedEngine(), modelQuery='?model_id='+encodeURIComponent(modelId);
+  const limits = currentCapabilities().reference || {};
+  if(limits.required === false) { const info=document.createElement('p');info.textContent='選択モデルは参照音声の準備が不要です。';return info; }
+  const details = document.createElement('details');const summary=document.createElement('summary');summary.textContent='選択モデルの声を準備';details.append(summary);
   const transcript=document.createElement('textarea');transcript.setAttribute('aria-label','参照区間の文字起こし');transcript.placeholder='選んだ区間で話している内容を正確に入力';
   const start=document.createElement('input'),end=document.createElement('input');for(const input of [start,end]){input.type='number';input.min='0';input.step='0.1';}
-  const startLabel=document.createElement('label');startLabel.textContent='開始（秒）';startLabel.append(start);const endLabel=document.createElement('label');endLabel.textContent='終了（秒・3〜10秒の区間）';endLabel.append(end);
+  const startLabel=document.createElement('label');startLabel.textContent='開始（秒）';startLabel.append(start);const endLabel=document.createElement('label');endLabel.textContent=`終了（秒・${limits.min_seconds}〜${limits.max_seconds}秒の区間）`;endLabel.append(end);
   const language=document.createElement('select');language.setAttribute('aria-label','録音の言語');language.append(new Option('日本語の録音','ja'),new Option('英語の録音','en'));
   const button=document.createElement('button');button.textContent='参照を保存して準備';button.className='secondary';const status=document.createElement('p');status.setAttribute('role','status');
   const automatic=document.createElement('button');automatic.textContent='区間と文字を自動入力';automatic.className='secondary';
@@ -194,11 +235,11 @@ function referenceEditor(voice) {
   details.append(help,language,actions,startLabel,endLabel,transcript,button,status);
   let loaded=false, digest=null, busy=false;
   const base='/api/v2/voices/'+encodeURIComponent(voice.id);
-  const fill=ref=>{start.value=ref.clip_start_ms/1000;end.value=ref.clip_end_ms==null?Math.min(10,ref.duration_seconds || 10):ref.clip_end_ms/1000;transcript.value=ref.reference_transcript;language.value=ref.reference_language;digest=ref.wav_sha256 || null;};
+  const fill=ref=>{start.value=ref.clip_start_ms/1000;end.value=ref.clip_end_ms==null?Math.min(limits.max_seconds || 30,ref.duration_seconds || 30):ref.clip_end_ms/1000;transcript.value=ref.reference_transcript;language.value=ref.reference_language;digest=ref.wav_sha256 || null;};
   const disable=value=>{busy=value;for(const el of [automatic,transcribe,preview,button,start,end,language,transcript])el.disabled=value;};
   const initialize=async()=>{
     if(loaded)return;
-    const ref=voice.kind==='design'?await api(base+'/standard-reference',{method:'POST'}):await api(base+'/reference');
+    const ref=voice.kind==='design'?await api(base+'/standard-reference'+modelQuery,{method:'POST'}):await api(base+'/reference'+modelQuery);
     fill(ref);loaded=true;
     status.textContent=ref.reference_audio_changed?'録音が変更されています。自動入力をやり直してください。':ref.source==='standard'?'標準の参照設定を入力済みです。そのまま保存して準備できます。':ref.reference_transcript?'保存済みの設定です。自動入力を行っても、保存するまで元の設定を保持します。':'自動入力で区間と文字を用意できます。';
   };
@@ -210,7 +251,7 @@ function referenceEditor(voice) {
       const payload={reference_language:language.value};
       if(selected){payload.clip_start_ms=Math.round(Number(start.value)*1000);payload.clip_end_ms=Math.round(Number(end.value)*1000);}
       status.textContent='PC内で文字起こししています…（初回はモデルの読み込みに時間がかかります）';
-      let result=await api(base+'/auto-reference',jsonRequest('POST',payload));
+      let result=await api(base+'/auto-reference'+modelQuery,jsonRequest('POST',payload));
       while(result.state==='transcribing'){await new Promise(r=>setTimeout(r,700));result=await api(base+'/auto-reference');}
       if(result.state!=='ready')throw new Error(result.message || '自動入力に失敗しました');
       fill(result.reference);status.textContent='下書きを入力しました。選択区間を試聴し、文字を確認してから「参照を保存して準備」を押してください。';
@@ -233,7 +274,7 @@ function referenceEditor(voice) {
       if(token!==generation)return;play(clip);status.textContent='選択区間の試聴を開始しました。Escで停止できます。';
     }catch(e){status.textContent=e.message;}
   };
-  button.onclick=async()=>{if(busy)return;disable(true);try{await api(base+'/reference',jsonRequest('PUT',{reference_transcript:transcript.value,reference_language:language.value,clip_start_ms:Math.round(Number(start.value)*1000),clip_end_ms:Math.round(Number(end.value)*1000),wav_sha256:digest}));let ref=await api(base+'/prepare',{method:'POST'});status.textContent='この声を準備しています…';while(ref.state==='preparing'){await new Promise(r=>setTimeout(r,500));ref=await api(base+'/preparation');}status.textContent=ref.state==='ready'?'準備完了。発話画面でOmniVoiceを選べます。':ref.message;await updateVoiceNotice();updateStatus();}catch(e){status.textContent=e.message;}finally{disable(false);}};
+  button.onclick=async()=>{if(busy)return;disable(true);try{await api(base+'/reference',jsonRequest('PUT',{reference_transcript:transcript.value,reference_language:language.value,clip_start_ms:Math.round(Number(start.value)*1000),clip_end_ms:Math.round(Number(end.value)*1000),wav_sha256:digest}));let ref=await api(base+'/prepare'+modelQuery,{method:'POST'});status.textContent='この声を準備しています…';while(ref.state==='preparing'){await new Promise(r=>setTimeout(r,500));ref=await api(base+'/preparation'+modelQuery);}status.textContent=ref.state==='ready'?'準備完了。発話に使えます。':ref.message;await updateVoiceNotice();updateStatus();}catch(e){status.textContent=e.message;}finally{disable(false);}};
   return details;
 }
 $('dictionary-preview-button').onclick=async()=>{try{const result=await api('/api/v2/reading-preview',jsonRequest('POST',{text:$('dictionary-example').value,mode:'ja',use_dictionary:true,draft_entries:rowsValue('dictionary-editor')}));$('dictionary-preview-result').textContent='読み：'+result.speech_text+' ／ 適用：'+result.applied_entries.map(e=>e.surface+'→'+e.reading).join('、');}catch(e){$('dictionary-preview-result').textContent=e.message;}};

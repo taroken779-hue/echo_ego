@@ -1,14 +1,24 @@
 {
-  "python_path": ".venv/Scripts/python.exe",
-  "source_path": "runtime/Irodori-TTS",
-  "model_path": "runtime/models/MF/model.safetensors",
-  "codec_repo": "Aratako/Semantic-DACVAE-Japanese-32dim",
+  "schema_version": 3,
+  "models": {
+    "omnivoice": {
+      "backend": "omnivoice",
+      "label": "OmniVoice",
+      "python_path": "runtime/omnivoice/.venv/Scripts/python.exe",
+      "model_path": "runtime/omnivoice/model",
+      "manifest_path": "runtime/omnivoice/manifest.json",
+      "device": "cuda",
+      "precision": "float16",
+      "defaults": {}
+    }
+  },
+  "default_model": "omnivoice",
+  "auxiliary_python": "runtime/omnivoice/.venv/Scripts/python.exe",
+  "auxiliary_manifest": "runtime/omnivoice/manifest.json",
+  "translation_model": "runtime/omnivoice/translation",
+  "asr_model": "runtime/omnivoice/asr",
+  "python_path": "runtime/app/.venv/Scripts/python.exe",
   "presets_dir": "presets",
-  "hf_home": "runtime/hf-cache",
-  "device": "cuda",
-  "precision": "bf16",
-  "codec_precision": "fp32",
-  "compile_model": false,
   "port": 8100,
   "offline": true,
   "preload": true

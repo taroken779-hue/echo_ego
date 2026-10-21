@@ -8,15 +8,16 @@ const history = [];
 let clientId = sessionStorage.echoClient || (sessionStorage.echoClient = crypto.randomUUID());
 let submissionChain = Promise.resolve();
 let engineStates = {}, operationError = '', omniReferenceReady = false;
-function engineName(engine) { return engine === 'irodori' ? 'Irodori-TTS' : 'OmniVoice'; }
+function engineName(engine) { return engineStates[engine]?.label || engine || '音声モデル'; }
 function jobProgress(job) {
   const name = engineName(job.payload.engine);
   return ({queued:'発話待ち', translating:'英語に翻訳中', waiting_engine:`${name}を準備中 · エンジンの切り替え・モデルの読み込みを待っています`, synthesizing:`${name}で音声を生成中`})[job.state] || `${name}への発話を受け付けています`;
 }
-function selectedEngine() { return $('speech-mode').value === 'ja_to_en' ? 'omnivoice' : $('speech-engine').value; }
+function selectedEngine() { return preferences.model_id || ''; }
+function currentCapabilities() { return engineStates[selectedEngine()] || {}; }
 const labels = {age_middle_male:'男性・落ち着いた声',age_middle_female:'女性・落ち着いた声',age_young_male:'男性・若い声',age_young_female:'女性・若い声',age_senior_male:'男性・年配の声',age_senior_female:'女性・年配の声',age_child_male:'男の子の声',age_child_female:'女の子の声',narrator:'ナレーター'};
 const dateFormat = new Intl.DateTimeFormat('ja-JP', {timeZone:'Asia/Tokyo', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'});
-function canSpeak() { return ready && Boolean($('voice').value) && (selectedEngine() !== 'omnivoice' || omniReferenceReady) && queue.length + prepared.length < 8; }
+function canSpeak() { return ready && Boolean($('voice').value) && omniReferenceReady && queue.length + prepared.length < 8; }
 function seconds(ms) { return (ms / 1000).toFixed(2); }
 function icon(name) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -53,17 +54,19 @@ async function refresh() {
     if (!r.ok) throw Error('接続できません');
     const s = await r.json();
     const engines = await (await fetch('/api/v2/engines')).json();
-    engineStates = engines;
+    engineStates = engines; renderModelControls();
     const selected = engines[selectedEngine()], name = engineName(selectedEngine());
-    ready = Boolean(selected?.installed); remoteBusy = s.busy; phase = selected?.phase || 'idle';
-    serverMessage = !ready ? `${name}は未導入です` : phase === 'error' ? `${name}の準備に失敗しました。環境設定を確認してください` : phase === 'loading' ? `${name}を準備中 · モデルを読み込んでいます` : phase === 'ready' ? `${name}のモデル準備完了 · ${selectedEngine() === 'omnivoice' ? '発話には声の参照設定も必要です' : '発話できます'}` : `${name}を選択中 · 次の発話時にエンジンを切り替え・準備します`;
-    $('model').textContent = `${selectedEngine() === 'omnivoice' ? 'OmniVoice' : s.model} · ${s.device.toUpperCase()} · ${engines[selectedEngine()]?.message || '未準備'}`;
+    ready = Boolean(selected?.installed) && Boolean(selected?.languages?.includes($('speech-mode').value === 'ja_to_en' ? 'en' : 'ja')); remoteBusy = s.busy; phase = selected?.phase || 'idle';
+    serverMessage = !ready ? `${name}は未導入です` : phase === 'error' ? `${name}の準備に失敗しました。環境設定を確認してください` : phase === 'loading' ? `${name}を準備中 · モデルを読み込んでいます` : phase === 'ready' ? `${name}のモデル準備完了 · ${selected?.reference?.required ? '発話には声の参照設定も必要です' : '発話できます'}` : `${name}を選択中 · 次の発話時にエンジンを切り替え・準備します`;
+    $('model').textContent = `${name} · ${(selected?.device || '').toUpperCase()} · ${engines[selectedEngine()]?.message || '未準備'}`;
     voiceItems = s.voices;
     const old = $('voice').value;
-    const signature = JSON.stringify(s.voices);
+    const signature = JSON.stringify([s.voices, selectedEngine()]);
     if ($('voice').dataset.signature !== signature) {
       $('voice').replaceChildren();
-      const favorites = s.voices.filter(v => v.favorite);
+      const favorites = selected?.reference?.required === false
+        ? [{id:'builtin:default',name:'モデル標準の声',favorite:false}]
+        : s.voices.filter(v => v.favorite);
       for (const v of favorites) {
         const o = document.createElement('option'); o.value = v.id;
         o.textContent = (v.favorite ? '★ ' : '') + (labels[v.name] || v.name);
@@ -75,8 +78,10 @@ async function refresh() {
       renderVoices();
     }
     await updateVoiceNotice();
+    if (ready && omniReferenceReady && phase === 'ready') serverMessage = `${name}の準備完了 · 発話できます`;
+    else if (selected?.installed && !selected?.languages?.includes($('speech-mode').value === 'ja_to_en' ? 'en' : 'ja')) serverMessage = `${name}は選択した発話言語に対応していません`;
     if (!$('voice').value) serverMessage = 'お気に入りの声がありません · 「声」ページで登録してください';
-    else if (selectedEngine() === 'omnivoice' && !omniReferenceReady && phase !== 'error' && phase !== 'loading') serverMessage = 'OmniVoice用の声の参照設定が必要です · 「声」ページを確認してください';
+    else if (!omniReferenceReady && phase !== 'error' && phase !== 'loading') serverMessage = '選択モデル用の声の参照設定が必要です · 「声」ページを確認してください';
   } catch (e) {
     ready = false; phase = 'error'; serverMessage = 'サーバーへ接続できません';
   }
@@ -87,14 +92,14 @@ async function updateVoiceNotice() {
   omniReferenceReady = false;
   const notice = $('voice-availability');
   if (!voice) { notice.textContent = 'お気に入りの声がありません。「声」ページでお気に入りにチェックを入れて保存してください。'; return; }
-  if (engine !== 'omnivoice') { notice.textContent = 'お気に入りの声を表示しています。Irodori-TTSは参照音声から声を再現します。'; return; }
-  notice.textContent = 'OmniVoice用の声の設定を確認しています…';
+  if (currentCapabilities().reference?.required === false) { omniReferenceReady = true; notice.textContent = '選択モデルは参照音声なしで発話できます。'; return; }
+  notice.textContent = '選択モデル用の声の設定を確認しています…';
   try {
-    const ref = await api('/api/v2/voices/' + encodeURIComponent(voice) + '/reference');
+    const ref = await api('/api/v2/voices/' + encodeURIComponent(voice) + '/reference?model_id=' + encodeURIComponent(engine));
     if ($('voice').value !== voice || selectedEngine() !== engine) return;
-    omniReferenceReady = !ref.reference_audio_changed && Boolean(ref.reference_transcript?.trim()) && ref.clip_end_ms != null && ref.clip_end_ms - ref.clip_start_ms >= 3000 && ref.clip_end_ms - ref.clip_start_ms <= 10000 && ref.clip_end_ms <= ref.duration_seconds * 1000 + 1;
-    notice.textContent = omniReferenceReady ? 'OmniVoice用の参照設定あり。参照区間と文字起こしが一致しているか「声」ページで確認できます。' : 'この声はOmniVoice用の設定が必要です。「声」ページの「区間と文字を自動入力」で下書きを作り、確認して保存してください。';
-  } catch { if ($('voice').value === voice) notice.textContent = 'OmniVoice用の設定を確認できません。「声」ページを確認してください。'; }
+    omniReferenceReady = ref.model_id === engine && ref.valid_for_model === true;
+    notice.textContent = omniReferenceReady ? '選択モデル用の参照設定あり。参照区間と文字起こしが一致しているか「声」ページで確認できます。' : 'この声は選択モデル用の設定が必要です。「声」ページの「区間と文字を自動入力」で下書きを作り、確認して保存してください。';
+  } catch { if ($('voice').value === voice) notice.textContent = '選択モデル用の設定を確認できません。「声」ページを確認してください。'; }
 }
 async function audioContext() {
   if (!ctx) { ctx = new AudioContext(); gain = ctx.createGain(); gain.connect(ctx.destination); }
@@ -193,7 +198,7 @@ async function speak(useCache = false, overrides = {}) {
   if (!text.trim() || Array.from(text).length > 160) { $('message').textContent = '1〜160文字で入力してください'; return; }
   const engine = selectedEngine();
   const payload = {text,voice_id:$('voice').value,mode:$('speech-mode').value,engine,speed:Number($('speed').value),
-    engine_settings:engine === 'irodori' ? {steps:Number($('steps').value)} : {num_step:Number($('omni-steps').value)},
+    engine_settings:modelSettings(),
     client_id:clientId,request_id:crypto.randomUUID(),use_phrase_cache:useCache === true,...overrides};
   const token = generation, start = performance.now(), voiceName = $('voice').selectedOptions[0]?.textContent;
   await audioContext(); if (token !== generation || !canSpeak()) return;
@@ -223,8 +228,7 @@ async function pumpSynthesis() {
       if (token !== generation || job.cancelled) return;
       job.state = result.state;
       $('message').textContent = jobProgress(job); updateStatus();
-      await new Promise(resolve=>setTimeout(resolve,250));
-      result = await api('/api/v2/speech-jobs/'+job.serverId);
+      result = await api('/api/v2/speech-jobs/'+job.serverId+'?after_state='+encodeURIComponent(result.state)+'&wait_ms=1000');
     }
     if (result.state === 'failed') throw Error(result.error.message);
     if (result.state === 'cancelled' || token !== generation || job.cancelled) return;
@@ -233,7 +237,7 @@ async function pumpSynthesis() {
     const bytes = await response.arrayBuffer(),received = performance.now()-start;
     const buffer = await ctx.decodeAudioData(bytes.slice(0)); if (token !== generation || job.cancelled) return;
     const snapshot = result.snapshot;
-    prepared.push({...job,bytes,buffer,received,metadata:{speech_text:snapshot.speech_text,translated_text:snapshot.translated_text,engine:snapshot.engine,reading_revision:snapshot.reading_revision,model_identity:snapshot.model,voice_revision:snapshot.voice_revision},
+    prepared.push({...job,bytes,buffer,received,metadata:{speech_text:snapshot.speech_text,translated_text:snapshot.translated_text,engine:snapshot.engine,reading_revision:snapshot.reading_revision,model_identity:snapshot.model,voice_revision:snapshot.voice_revision,translation_identity:snapshot.translation_identity,generation_settings:snapshot.settings},
       first:Number(response.headers.get('X-First-Signal-Ms')),generatedAt:response.headers.get('X-Generated-At'),synthesis:Number(response.headers.get('X-Synthesis-Ms')),cached:response.headers.get('X-Cached')==='1'});
     pumpPlayback();
   } catch(e) { if (token === generation && !job.cancelled) { operationError = e.message; $('message').textContent = e.message; } }
@@ -273,9 +277,7 @@ $('upload').onchange = async () => {
 };
 window.addEventListener('keydown', e => { if (e.key === 'Escape') { stop(); } if (e.altKey && /^[1-9]$/.test(e.key) && !e.isComposing && !e.repeat) { e.preventDefault(); triggerPhrase(Number(e.key) - 1); } });
 
-$('speech-mode').onchange = () => { operationError = '';  if ($('speech-mode').value === 'ja_to_en') $('speech-engine').value = 'omnivoice'; refresh(); rememberSpeechSettings(); };
-$('speech-engine').onchange = () => { operationError = '';  if ($('speech-mode').value === 'ja_to_en') $('speech-engine').value = 'omnivoice'; refresh(); rememberSpeechSettings(); };
-$('omni-steps').onchange = () => rememberSpeechSettings();
+$('speech-mode').onchange = async () => { operationError = ''; await rememberSpeechSettings(); await refresh(); };
 $('reading-check').onclick = async () => {
   try { const result = await api('/api/v2/reading-preview',jsonRequest('POST',{text:$('text').value,mode:$('speech-mode').value,use_dictionary:true}));
     $('reading-preview').textContent = $('speech-mode').value === 'ja' ? '読み上げる文：'+result.speech_text : result.warnings.join(' ');
