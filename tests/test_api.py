@@ -134,7 +134,7 @@ class ApiTests(unittest.TestCase):
 
     def test_07_catalog_retired_api_and_invalid_model(self):
         models=self.client.get('/api/v2/models').json()
-        self.assertEqual(set(models),{'omnivoice'})
+        self.assertEqual(set(models),set(self.app.config.models))
         self.assertTrue(models['omnivoice']['reference']['transcript_required'])
         self.assertEqual(self.client.post('/api/speech',json={}).status_code,410)
         bad={'client_id':'bad-model','request_id':'missing','voice_id':'custom:test','text':'こんにちは。','model_id':'missing'}
@@ -163,7 +163,7 @@ class ApiTests(unittest.TestCase):
         prefs=self.app.store.preferences()
         self.app.store.save_preferences(prefs.model_copy(update={'history_enabled':True}))
         metadata={'id':str(uuid.uuid4()),'text':'履歴の確認です。','voice':'test',
-            'generatedAt':'2026-10-22T00:00:00Z','timing':{},
+            'generatedAt':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),'timing':{},
             'translation_identity':{'revision':'translation-test'},'generation_settings':{'num_step':16}}
         try:
             response=self.client.post('/api/history',data={'metadata':json.dumps(metadata)},files={'file':('test.wav',self.path.read_bytes(),'audio/wav')})
@@ -184,6 +184,43 @@ class ApiTests(unittest.TestCase):
         with patch.object(self.app.service,'prepare_voice',side_effect=ValueError('reference missing')):
             self.app.initialize()
             self.assertEqual(self.app.state['phase'],'ready')
+
+
+    def test_12_stream_frames_ownership_and_failure(self):
+        from speech.stream import read_frame
+        caps = dict(self.app.manager.capabilities('omnivoice'), stream=True)
+        pcm = (np.sin(np.arange(2400)*.1)*10000).astype('<i2').tobytes()
+        def chunks(payload):
+            yield {'type':'format','sample_rate':24000,'channels':1,'encoding':'pcm_s16le'}, b''
+            yield {'type':'audio'}, pcm
+        value={'client_id':'stream-test','request_id':'ok','voice_id':'custom:test','text':'テストです。','engine':'omnivoice','stream':True,'audition':True}
+        worker=self.app.manager.workers['omnivoice']
+        with patch.object(self.app.manager,'capabilities',return_value=caps),patch.object(worker,'stream',side_effect=chunks):
+            job=self.client.post('/api/v2/speech-jobs',json=value).json()
+            url='/api/v2/speech-jobs/'+job['id']+'/stream'
+            self.assertEqual(self.client.get(url+'?client_id=other').status_code,403)
+            self.assertEqual(self.client.get(url+'?client_id=stream-test',headers={'Origin':'https://example.com'}).status_code,403)
+            response=self.client.get(url+'?client_id=stream-test')
+            self.assertEqual(response.status_code,200)
+            stream=io.BytesIO(response.content)
+            self.assertEqual(read_frame(stream)[0]['type'],'format')
+            self.assertEqual(read_frame(stream)[1],pcm)
+            end=read_frame(stream)[0]
+            self.assertEqual(end['type'],'end')
+            self.assertNotIn('reference',end['job']['snapshot'])
+            self.assertEqual(self.client.get('/api/v2/speech-jobs/'+job['id']+'/audio').status_code,200)
+        def broken(payload):
+            yield from chunks(payload)
+            raise ValueError('生成失敗')
+        with patch.object(self.app.manager,'capabilities',return_value=caps),patch.object(worker,'stream',side_effect=broken):
+            job=self.client.post('/api/v2/speech-jobs',json={**value,'request_id':'broken'}).json()
+            response=self.client.get('/api/v2/speech-jobs/'+job['id']+'/stream?client_id=stream-test')
+            stream=io.BytesIO(response.content)
+            while True:
+                meta,_=read_frame(stream)
+                if meta['type']=='error':break
+                self.assertNotEqual(meta['type'],'end')
+            self.assertEqual(self.client.get('/api/v2/speech-jobs/'+job['id']+'/audio').status_code,410)
 
 
 if __name__=='__main__':unittest.main()

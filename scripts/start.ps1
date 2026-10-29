@@ -4,7 +4,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $runtimeDir = Join-Path $projectRoot '.runtime'
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 $configPath = Join-Path $projectRoot 'config.local.json'
-$config = Get-Content -LiteralPath $(if (Test-Path -LiteralPath $configPath) { $configPath } else { Join-Path $projectRoot 'config.example.json' }) -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $(if (Test-Path -LiteralPath $configPath) { $configPath } else { Join-Path $projectRoot 'config.example.json' }) -Raw -Encoding UTF8 | ConvertFrom-Json
 $port = [int]$config.port
 $appUrl = 'http://127.0.0.1:' + $port
 try {

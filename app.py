@@ -486,6 +486,33 @@ def cancel_client(client_id: str):
     return service.jobs.cancel_client(client_id)
 
 
+@app.get('/api/v2/speech-jobs/{job_id}/stream')
+def stream_job(job_id: str, client_id: str = Query(min_length=1,max_length=64)):
+    from fastapi.responses import StreamingResponse
+    from speech.stream import pack
+    service.jobs.check_stream(job_id,client_id)
+    async def frames():
+        index = 0
+        finished = False
+        try:
+            while True:
+                frame,value,terminal = await asyncio.to_thread(service.jobs.stream_next,job_id,client_id,index)
+                if frame is not None:
+                    index += 1
+                    yield frame
+                elif terminal:
+                    finished = True
+                    if value['state']=='ready':
+                        yield pack({'type':'end' if index else 'complete','job':service.public_job(value)})
+                    else:
+                        yield pack({'type':'error','message':value.get('error',{}).get('message','発話を停止しました')})
+                    return
+        finally:
+            if not finished:
+                service.jobs.cancel(job_id)
+    return StreamingResponse(frames(),media_type='application/octet-stream',headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+
+
 @app.get("/api/v2/voices/{voice_id}/reference")
 def voice_reference(voice_id: str, model_id: str | None = None):
     path = resolve_voice(voice_id)

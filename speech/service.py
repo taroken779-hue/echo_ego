@@ -25,6 +25,7 @@ class SpeechRequest(BaseModel):
     engine_settings: dict = Field(default_factory=dict)
     use_phrase_cache: bool = False
     audition: bool = False
+    stream: bool = False
     draft_entries: list[dict] | None = Field(default=None,max_length=100)
 
     @model_validator(mode="after")
@@ -153,7 +154,7 @@ class SpeechService:
         preparation_id = model_id + ":" + voice
         with self.preparation_lock:
             old = self.preparations.get(preparation_id,{})
-            if old.get("key")==key and old.get("state") in {"preparing","ready"}:
+            if old.get("key")==key and (old.get("state")=="preparing" or (old.get("state")=="ready" and getattr(self.manager,'active',model_id)==model_id)):
                 return dict(old)
             item = {"state":"preparing","key":key,"voice_revision":ref["revision"],"model_id":model_id}
             self.preparations[preparation_id] = item
@@ -254,8 +255,36 @@ class SpeechService:
             self.manager.activate(snap["engine"])
             if not self.jobs.update(job,"synthesizing"):
                 return
-            result = self.manager.call(snap["engine"],"synthesize",{
-                **snap["reference"],"text":snap["speech_text"],"language":snap["target_language"],"settings":snap["settings"],"speed":p["speed"]},timeout=60)
+            request = {**snap["reference"],"text":snap["speech_text"],"language":snap["target_language"],"settings":snap["settings"],"speed":p["speed"]}
+            if p.get('stream') and self.manager.capabilities(snap['engine']).get('stream'):
+                import numpy as np
+                from speech.audio import audio_result
+                chunks, rate, count = [], None, 0
+                stream = self.manager.workers[snap['engine']].stream(request)
+                try:
+                    for meta,pcm in stream:
+                        if meta['type']=='format':
+                            if rate is not None or meta.get('channels')!=1 or meta.get('encoding')!='pcm_s16le' or meta.get('sample_rate')!=24000 or pcm:
+                                raise ValueError('音声形式が不正です')
+                            rate = meta['sample_rate']
+                        elif meta['type']=='audio':
+                            if rate is None or len(pcm)%2 or not pcm:
+                                raise ValueError('音声チャンクが不正です')
+                            count += len(pcm)//2
+                            if count > rate*30:
+                                raise ValueError('音声が30秒を超えました')
+                            chunks.append(pcm)
+                        else:
+                            raise ValueError('未対応の音声イベントです')
+                        if not self.jobs.publish(job,meta,pcm):
+                            return
+                finally:
+                    stream.close()
+                if not rate or not chunks:
+                    raise ValueError('音声がありません')
+                result = audio_result(np.frombuffer(b''.join(chunks),dtype='<i2').astype(np.float32)/32768,rate,start)
+            else:
+                result = self.manager.call(snap['engine'],'synthesize',request,timeout=60)
             audio,headers = base64.b64decode(result["audio"]),{**result["headers"],"X-Cached":"0"}
             job["timing"]["processing_ms"] = (time.perf_counter()-start)*1000
             self.jobs.commit(job,audio,headers, (lambda:self.store.save_cache(key,audio,headers)) if p["use_phrase_cache"] else None)

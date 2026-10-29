@@ -10,7 +10,7 @@ if ($process) {
     # Let the controller close its owned inference workers first.
     $configPath = Join-Path $projectRoot 'config.local.json'
     if (-not (Test-Path -LiteralPath $configPath)) { $configPath = Join-Path $projectRoot 'config.example.json' }
-    $port = (Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json).port
+    $port = (Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json).port
     try { Invoke-RestMethod ('http://127.0.0.1:' + $port + '/api/shutdown') -Method Post -TimeoutSec 15 | Out-Null } catch {}
     Start-Sleep -Seconds 1
     $process = Get-CimInstance Win32_Process -Filter "ProcessId=$serverProcessId"

@@ -60,7 +60,7 @@ class Backend:
         manifest = {"source_revision": manifest.get("source_revision"), "models": {
             key: value for key, value in manifest.get("models", {}).items() if key in cls.capabilities.get("repositories", [])}}
         import inspect
-        files = [Path(__file__), Path(inspect.getfile(cls)), ROOT / "speech/worker.py", ROOT / "speech/audio.py"]
+        files = [Path(__file__), Path(inspect.getfile(cls)), ROOT / "speech/worker.py", ROOT / "speech/audio.py", ROOT / "speech/stream.py"]
         digest = hashlib.sha256(b"".join(p.read_bytes() for p in files if p.exists())).hexdigest()
         return {"backend": config.backend, "model_path": config.model_path, "model_mtime": path.stat().st_mtime_ns if path.exists() else 0,
                 "manifest": manifest, "adapter_sha256": digest, "device": config.device, "precision": config.precision}

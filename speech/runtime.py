@@ -96,6 +96,26 @@ class Worker:
             self.process.stdout.close()
             self.process = None
 
+    def stream(self, payload):
+        from speech.stream import read_frame
+        self.start()
+        req = urllib.request.Request(self.url+'/stream', data=json.dumps(payload,ensure_ascii=False).encode(),
+            headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json'})
+        try:
+            with urllib.request.urlopen(req,timeout=180) as response:
+                while True:
+                    meta,pcm = read_frame(response)
+                    if meta['type'] == 'end':
+                        return
+                    if meta['type'] == 'error':
+                        raise ValueError(meta['message'])
+                    yield meta,pcm
+        except GeneratorExit:
+            raise
+        except Exception:
+            self.stop()
+            raise
+
 
 class RuntimeManager:
     def __init__(self, config):

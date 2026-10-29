@@ -30,3 +30,7 @@ setup.batの最後に設定とDBを移行します。旧config.local.jsonはconf
 - 詳細は.runtime/server-error.logを確認します。ワーカーのエラー記録は例外型と発生箇所のみです。共有前に個人パス等を除いてください。
 
 モデルのロードに失敗しても、基本Python環境が正常なら設定・マニュアルを開けます。別PCの新規導入、CPU性能、本人の実聴と通話は検証記録の確認範囲に従ってください。
+
+## Qwen3-TTSの追加
+
+NVIDIA CUDA環境では setup_qwen3.bat で低遅延モデルを追加できます。通常の起動・停止は start.bat / stop.bat のままです。再起動後に設定画面でモデルを切り替えます。[Qwen3導入・操作ガイド](QWEN3_GUIDE.md)を参照してください。

@@ -32,6 +32,24 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("要求が大きすぎます")
             payload = json.loads(self.rfile.read(size))
             action = self.path.strip("/")
+            if action == 'stream' and backend is not None and backend.capabilities.get('stream'):
+                from speech.stream import pack
+                self.send_response(200)
+                self.send_header('Content-Type','application/octet-stream')
+                self.end_headers()
+                try:
+                    for meta,pcm in backend.synthesize_stream(payload):
+                        self.wfile.write(pack(meta,pcm))
+                        self.wfile.flush()
+                    self.wfile.write(pack({'type':'end'}))
+                except (BrokenPipeError,ConnectionResetError):
+                    pass
+                except Exception:
+                    try:
+                        self.wfile.write(pack({'type':'error','message':'音声の逐次生成に失敗しました。文の長さ・参照音声・環境を確認してください'}))
+                    except (BrokenPipeError,ConnectionResetError):
+                        pass
+                return
             if backend is not None:
                 actions = {"load": lambda: backend.load(), "synthesize": lambda: backend.synthesize(payload),
                     "prepare-voice": lambda: backend.prepare(payload), "design": lambda: backend.design(payload),

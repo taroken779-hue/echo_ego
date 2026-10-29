@@ -31,12 +31,13 @@ class Jobs:
     def _prune(self):
         now = time.monotonic()
         terminal = [j for j in self.items.values() if j["state"] in TERMINAL]
-        total = sum(len(j.get("audio", b"")) for j in terminal)
+        total = sum(len(j.get("audio", b""))+j.get('stream_bytes',0) for j in terminal)
         remaining = len(terminal)
         for job in terminal:
             if remaining <= 100 and total <= 128*1024*1024 and now-job["accessed"] <= 900:
                 continue
-            total -= len(job.pop("audio", b""))
+            total -= len(job.pop("audio", b""))+job.pop('stream_bytes',0)
+            job.pop('frames',None)
             remaining -= 1
             # Expired IDs remain as bounded tombstones; requests are removed with them.
             job["expired"] = True
@@ -110,6 +111,8 @@ class Jobs:
             if key in self.items:
                 self.items[key]["state"] = "cancelled"
                 self.items[key].pop("audio",None)
+                self.items[key].pop('frames',None)
+                self.items[key].pop('stream_bytes',None)
                 self.changed.notify_all()
         return {"ok":True}
 
@@ -135,6 +138,44 @@ class Jobs:
             job.update(values)
             self.changed.notify_all()
             return True
+
+    def publish(self, job, meta, pcm=b''):
+        from speech.stream import pack
+        with self.lock:
+            if job['state'] == 'cancelled' or self.closed:
+                return False
+            frames = job.setdefault('frames',[])
+            frame = pack({**meta,'sequence':len(frames)},pcm)
+            size = job.get('stream_bytes',0)+len(frame)
+            if size > 2*1024*1024 or len(frames) >= 512:
+                raise ValueError('音声ストリームの上限を超えました')
+            frames.append(frame)
+            job['stream_bytes'] = size
+            job['state'] = 'streaming'
+            self.changed.notify_all()
+            return True
+
+    def check_stream(self, key, client_id):
+        with self.lock:
+            self.get(key)
+            job = self.items[key]
+            if job['client_id'] != client_id:
+                raise JobError(403,'この発話の音声は取得できません')
+            if not job['payload'].get('stream'):
+                raise JobError(409,'この発話は逐次再生ではありません')
+
+    def stream_next(self, key, client_id, index):
+        with self.changed:
+            self.check_stream(key,client_id)
+            job = self.items[key]
+            if len(job.get('frames',[])) <= index and job['state'] not in TERMINAL and not self.closed:
+                self.changed.wait(1.)
+            if job['state'] in {'failed','cancelled'} or self.closed:
+                return None, self.public(job), True
+            frames = job.get('frames',[])
+            if index < len(frames):
+                return frames[index], None, False
+            return None, self.public(job), job['state'] == 'ready'
 
     def commit(self, job, audio, headers, save_cache=None):
         with self.lock:

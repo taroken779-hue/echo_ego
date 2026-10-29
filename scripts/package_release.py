@@ -9,10 +9,12 @@ def build():
     files = [ROOT / name for name in FILES]
     files += [ROOT / name for name in ["reading_dictionary.py", "requirements-omnivoice.lock.txt", "setup_omnivoice.bat", "scripts/setup_omnivoice.ps1", "scripts/download_omnivoice.py", "scripts/verify_omnivoice.py", "docs/OMNIVOICE_GUIDE.md", "docs/OMNIVOICE_IMPLEMENTATION.md"]]
     files += sorted((ROOT / "speech").rglob("*.py"))
+    files += [ROOT / name for name in ["setup_qwen3.bat", "scripts/setup_qwen3.ps1", "scripts/register_qwen3.py", "docs/QWEN3_GUIDE.md", "docs/QWEN3_INTEGRATION_VALIDATION.md", "docs/LOW_LATENCY_ARCHITECTURE.md", "docs/QWEN3_TTS_EVALUATION_2026-10-29.md"]]
     files += sorted((ROOT / "static").glob("*"))
     files += [ROOT / "docs" / name for name in ["TTS_BACKEND_DESIGN.md", "TTS_BACKEND_GUIDE.md", "TTS_BACKEND_VALIDATION.md", "TTS_BACKEND_MIGRATION_TASKS.md", "LATENCY_IMPROVEMENTS_2026-10-22.md"]]
     files += [ROOT / "scripts" / name for name in ["verify_backend_api.py", "start_backend_validation.py"]]
     files += sorted((ROOT / "tests").glob("test_*.py"))
+    files += sorted((ROOT / "tests").glob("test_*.cjs"))
     dest = ROOT / "dist" / "echo-ego-source.zip"
     dest.parent.mkdir(exist_ok=True)
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as archive:

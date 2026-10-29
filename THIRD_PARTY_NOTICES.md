@@ -12,3 +12,9 @@ Use only recordings you own or have permission to use. Consult the installed mod
 OmniVoiceコード（k2-fsa/OmniVoice）はApache-2.0、公開モデル重みは提供元モデルカードでCC-BY-NCとされます。音声Codecはeustlb/higgs-audio-v2-tokenizer、翻訳モデルはHelsinki-NLP/opus-mt-ja-en（Apache-2.0）を別途取得します。実際の取得revisionはローカルmanifestへ記録し、各モデルのLICENSE/モデルカードを同梱された取得物から確認してください。モデル・Codec・登録音声はこのソース配布に含めません。
 
 Local ASR uses openai/whisper-large-v3-turbo. Check the downloaded model card and license at the recorded revision. Irodori, its Japanese DACVAE and SilentCipher are no longer installed or used by the application setup. Previously generated local reference WAVs may be retained by their owner; no recordings or weights are bundled in the source ZIP.
+
+## Optional Qwen3 backend
+
+Qwen/Qwen3-TTS-12Hz-0.6B-Base is downloaded separately at revision 5d83992436eae1d760afd27aff78a71d676296fc. Its model card and license remain applicable: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base .
+
+Low-latency inference uses the third-party faster-qwen3-tts 0.5.4 (MIT; Copyright 2026 Andres Marafioti), qwen-tts-hf 0.1.1.post1, Transformers 5.15.1 and PyTorch 2.10.0+cu128 in an isolated environment. This is not the unmodified official Qwen inference pipeline. Consult the installed distributions for their respective licenses. No weights, reference recordings, generated audio or Python environments are included in the source archive.

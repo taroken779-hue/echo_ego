@@ -43,6 +43,10 @@ $('model-selector').onchange=async()=>{
   try { preferences=await api('/api/preferences',jsonRequest('PUT',preferences));$('model-change-notice').textContent='音声モデルを変更しました。声の準備と定型句の事前生成を確認してください。'; }
   catch(e) {preferences.model_id=previous;$('model-change-notice').textContent=e.message;}
   await refresh();renderVoices();
+  if (omniReferenceReady && $('voice').value) {
+    try { await api('/api/v2/voices/'+encodeURIComponent($('voice').value)+'/prepare?model_id='+encodeURIComponent(selectedEngine()),{method:'POST'}); }
+    catch(e) { $('model-change-notice').textContent=e.message; }
+  }
 };
 function showHistoryError(e) { $('history-notice').hidden = false; $('history-notice-text').textContent = '履歴の保存・削除に失敗しました：' + e.message; $('undo').hidden = true; }
 async function loadItemAudio(item) {

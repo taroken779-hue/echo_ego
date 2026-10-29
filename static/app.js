@@ -11,7 +11,7 @@ let engineStates = {}, operationError = '', omniReferenceReady = false;
 function engineName(engine) { return engineStates[engine]?.label || engine || '音声モデル'; }
 function jobProgress(job) {
   const name = engineName(job.payload.engine);
-  return ({queued:'発話待ち', translating:'英語に翻訳中', waiting_engine:`${name}を準備中 · エンジンの切り替え・モデルの読み込みを待っています`, synthesizing:`${name}で音声を生成中`})[job.state] || `${name}への発話を受け付けています`;
+  return ({queued:'発話待ち', translating:'英語に翻訳中', waiting_engine:`${name}を準備中 · エンジンの切り替え・モデルの読み込みを待っています`, synthesizing:`${name}で音声を生成中`, streaming:'音声を受信しながら再生中'})[job.state] || `${name}への発話を受け付けています`;
 }
 function selectedEngine() { return preferences.model_id || ''; }
 function currentCapabilities() { return engineStates[selectedEngine()] || {}; }
@@ -110,6 +110,7 @@ async function audioContext() {
   await ctx.resume(); return ctx;
 }
 function stopPlayback() {
+  streamPlayback?.stop(); streamPlayback = null;
   if (source) { source.onended = null; try { source.stop(); } catch {} source = null; }
   playing = false; playingItemId = null;
 }
@@ -198,7 +199,7 @@ async function speak(useCache = false, overrides = {}) {
   if (!text.trim() || Array.from(text).length > 160) { $('message').textContent = '1〜160文字で入力してください'; return; }
   const engine = selectedEngine();
   const payload = {text,voice_id:$('voice').value,mode:$('speech-mode').value,engine,speed:Number($('speed').value),
-    engine_settings:modelSettings(),
+    engine_settings:modelSettings(),stream:Boolean(currentCapabilities().stream),
     client_id:clientId,request_id:crypto.randomUUID(),use_phrase_cache:useCache === true,...overrides};
   const token = generation, start = performance.now(), voiceName = $('voice').selectedOptions[0]?.textContent;
   await audioContext(); if (token !== generation || !canSpeak()) return;
@@ -224,6 +225,7 @@ async function pumpSynthesis() {
   synthesizing = true; localBusy = true; activeJob = job; operationError = ''; updateStatus();
   try {
     let result = await job.submission;
+    if (payload.stream && await consumeSpeechStream(job)) return;
     while (!['ready','failed','cancelled'].includes(result.state)) {
       if (token !== generation || job.cancelled) return;
       job.state = result.state;
