@@ -23,7 +23,7 @@ def main():
         config.python_path = "runtime/app/.venv/Scripts/python.exe"
     if args.cpu or not raw or raw.get("schema_version") != 3 or raw.get("python_path") != config.python_path:
         save_config(config)
-    Store(data_dir())
+    Store(data_dir(), default_model=config.default_model)
     print("Configuration and preferences migrated; original files are backed up before changes.")
 
 

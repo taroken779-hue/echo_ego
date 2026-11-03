@@ -5,7 +5,7 @@
 ## 配布前の確認
 - 声・履歴・.runtimeログ・config.local.json・モデル・.venv・既存環境の個人パスは含めません。.gitignoreでも対象を除外します。
 - .github/workflows/check.ymlで保存上限・設定検証の単体テストとJavaScript構文・配布ZIPを確認します。GPU合成・録音・音質はCIで保証しません。
-- 別のWindows PCでsetup.bat・start.bat・モデル取得・発話・録音・停止を試してから正式リリースにしてください。Qwen3を使う構成では、setup.batの後にsetup_qwen3.batを実行し、再起動後のモデル選択・参照設定・ストリーム再生も確認します。
+- 別のWindows PCでsetup.bat・start.bat・モデル取得・発話・録音・停止を試してから正式リリースにしてください。Qwen3構成はsetup.batまたはsetup_qwen3.batの1回で導入し、OmniVoice本体とCodecを取得しないこと、独立した補助環境で翻訳・文字起こしができることを確認します。OmniVoiceの追加はsetup_omnivoice.batで別途確認します。
 - 声の類似性、読み間違い、余計な発話、長い文の品質は実際に聞いて確認してください。
 ## データとライセンス
 アプリのソースは同梱LICENSEに記載したMITライセンスです。音声モデル・Codec・翻訳・ASR・依存パッケージは各提供元のライセンスと利用条件に従います。THIRD_PARTY_NOTICES.mdに参照先をまとめています。モデル本体と第三者の声はこの配布ZIPに含めません。

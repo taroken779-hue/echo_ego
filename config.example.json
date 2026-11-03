@@ -1,22 +1,22 @@
 {
   "schema_version": 3,
   "models": {
-    "omnivoice": {
-      "backend": "omnivoice",
-      "label": "OmniVoice",
-      "python_path": "runtime/omnivoice/.venv/Scripts/python.exe",
-      "model_path": "runtime/omnivoice/model",
-      "manifest_path": "runtime/omnivoice/manifest.json",
+    "qwen3": {
+      "backend": "qwen3_fast",
+      "label": "Qwen3-TTS（低遅延）",
+      "python_path": "runtime/qwen3-fast/.venv/Scripts/python.exe",
+      "model_path": "runtime/qwen3-tts/model-0.6b",
+      "manifest_path": "runtime/qwen3-fast/manifest.json",
       "device": "cuda",
-      "precision": "float16",
+      "precision": "bfloat16",
       "defaults": {}
     }
   },
-  "default_model": "omnivoice",
-  "auxiliary_python": "runtime/omnivoice/.venv/Scripts/python.exe",
-  "auxiliary_manifest": "runtime/omnivoice/manifest.json",
-  "translation_model": "runtime/omnivoice/translation",
-  "asr_model": "runtime/omnivoice/asr",
+  "default_model": "qwen3",
+  "auxiliary_python": "runtime/auxiliary/.venv/Scripts/python.exe",
+  "auxiliary_manifest": "runtime/auxiliary/manifest.json",
+  "translation_model": "runtime/auxiliary/translation",
+  "asr_model": "runtime/auxiliary/asr",
   "python_path": "runtime/app/.venv/Scripts/python.exe",
   "presets_dir": "presets",
   "port": 8100,

@@ -1,10 +1,10 @@
-param([switch]$SkipInstall)
+param([switch]$SkipInstall, [switch]$SkipDownload)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { throw 'Install uv and reopen the terminal. See docs/SETUP.md.' }
 $appPythonPath = Join-Path $projectRoot 'runtime/app/.venv/Scripts/python.exe'
-if (-not (Test-Path -LiteralPath $appPythonPath)) { throw 'Run setup.bat first to install Echo Ego and its auxiliary models. Then run setup_qwen3.bat.' }
+if (-not (Test-Path -LiteralPath $appPythonPath)) { throw 'Run setup.bat or setup_qwen3.bat to install the app, auxiliary services and Qwen3.' }
 $pythonPath = Join-Path $projectRoot 'runtime/qwen3-fast/.venv/Scripts/python.exe'
 if (-not $SkipInstall) {
     if (-not (Test-Path -LiteralPath $pythonPath)) {
@@ -17,11 +17,11 @@ if (-not $SkipInstall) {
     if ($LASTEXITCODE -ne 0) { throw 'Qwen runtime installation failed.' }
     & $pythonPath -c "import torch; assert torch.cuda.is_available(), 'Qwen3 requires an NVIDIA CUDA GPU and a compatible driver.'; assert torch.cuda.is_bf16_supported(), 'Qwen3 requires bfloat16 support with the configured CUDA runtime.'"
     if ($LASTEXITCODE -ne 0) { throw 'Qwen3 GPU validation failed. See docs/QWEN3_GUIDE.md.' }
-    & $pythonPath -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-TTS-12Hz-0.6B-Base', revision='5d83992436eae1d760afd27aff78a71d676296fc', local_dir='runtime/qwen3-tts/model-0.6b')"
-    if ($LASTEXITCODE -ne 0) { throw 'Qwen model download failed.' }
+    if (-not $SkipDownload) {
+        & $pythonPath -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-TTS-12Hz-0.6B-Base', revision='5d83992436eae1d760afd27aff78a71d676296fc', local_dir='runtime/qwen3-tts/model-0.6b')"
+        if ($LASTEXITCODE -ne 0) { throw 'Qwen model download failed.' }
+    }
 }
 uv pip check --python $pythonPath
 if ($LASTEXITCODE -ne 0) { throw 'Dependency validation failed.' }
-& $appPythonPath (Join-Path $PSScriptRoot 'register_qwen3.py')
-if ($LASTEXITCODE -ne 0) { throw 'Qwen registration failed.' }
-Write-Host 'Setup complete. Run start.bat, then select Qwen3-TTS in Settings. See docs/QWEN3_GUIDE.md.'
+Write-Host 'Qwen3 backend is ready. The main setup will register its configuration.'

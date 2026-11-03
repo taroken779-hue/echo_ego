@@ -28,4 +28,4 @@ if (-not $SkipDownload) {
     & $pythonPath (Join-Path $PSScriptRoot 'download_omnivoice.py')
     if ($LASTEXITCODE -ne 0) { throw 'Model download failed. Run again to resume.' }
 }
-Write-Host 'OmniVoice backend and auxiliary services are ready. Existing settings were preserved.'
+Write-Host 'Optional OmniVoice backend is ready. Auxiliary services are installed separately.'

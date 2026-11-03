@@ -2,9 +2,9 @@
 
 ## 導入
 
-OmniVoice・日英翻訳・文字起こしモデルは専用環境へ導入する。新規導入では`setup.bat`でアプリと標準のOmniVoice・補助モデルを導入する。以前に導入済みでも、自動文字起こしモデルがない場合は再実行する。モデル取得時だけネットワークが必要。導入後の発話・翻訳・文字起こしはローカルで処理する。
+OmniVoiceは任意追加の音声モデル。Git for Windowsとuvを用意し、アプリ停止後にsetup_omnivoice.batを実行する。アプリ・独立したCPU補助環境・OmniVoiceを導入する。標準のsetup.batはQwen3構成で、OmniVoice本体を取得しない。モデル取得時だけネットワークが必要。導入後の発話・翻訳・文字起こしはローカルで処理する。
 
-OmniVoice公式ソースは固定コミット、Python依存は`requirements-omnivoice.lock.txt`、モデルとCodecと翻訳器は`runtime/omnivoice/manifest.json`のrevisionを使用する。再実行では既存のモデルrevisionを維持する。アプリ用環境とモデル用環境は分離する。
+OmniVoice公式ソースは固定コミット、Python依存は`requirements-omnivoice.lock.txt`、音声モデルとCodecはruntime/omnivoice/manifest.json、翻訳と文字起こしはruntime/auxiliary/manifest.jsonのrevisionを使用する。再実行では既存のモデルrevisionを維持する。アプリ用環境とモデル用環境は分離する。
 
 ## 声の準備
 
@@ -23,7 +23,7 @@ OmniVoice公式ソースは固定コミット、Python依存は`requirements-omn
 Qwen3の追加導入・チャンク設定・ストリーム再生の手順は、使い方の「Qwen3-TTS（低遅延）」を参照してください。以下の生成ステップ32/16はOmniVoice用です。
 
 
-「日本語」「英語に翻訳」の両方で設定画面の選択モデルを使う。標準はOmniVoiceで、追加導入したQwen3-TTSも選択できる。対象言語に未対応のモデルでは発話できない。日本語原文を入力してEnterで送信すると、英文を表示して英語音声を再生する。
+「日本語」「英語に翻訳」の両方で設定画面の選択モデルを使う。新規導入の標準はQwen3-TTS。OmniVoiceも追加導入後に選択できる。対象言語に未対応のモデルでは発話できない。日本語原文を入力してEnterで送信すると、英文を表示して英語音声を再生する。
 
 OmniVoiceの生成ステップは詳細欄の32（標準）/16（速度比較）から選ぶ。表示する生成設定はモデルの能力情報で決まる。Irodoriは廃止済み。
 

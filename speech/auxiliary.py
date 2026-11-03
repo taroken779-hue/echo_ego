@@ -26,7 +26,7 @@ class Auxiliary:
             raise ValueError("録音が変更されました。やり直してください")
         asr_path = ROOT / self.config.asr_model
         if not (asr_path / "model.safetensors").is_file():
-            raise ValueError("自動文字起こしモデルがありません。setup_omnivoice.batを実行してください")
+            raise ValueError("自動文字起こしモデルがありません。setup.batで補助環境を導入してください")
         values, sr = sf.read(path, dtype="float32", always_2d=True)
         clip, start, end = select_clip(values, sr, p.get("clip_start_ms"), p.get("clip_end_ms"),
             p.get("min_seconds", 3), p.get("max_seconds", 10))

@@ -7,6 +7,9 @@ FILES = ["app.py", "run.py", "configuration.py", "store.py", "config.example.jso
 
 def build():
     files = [ROOT / name for name in FILES]
+    files += [ROOT / name for name in ['requirements-auxiliary.txt', 'scripts/__init__.py', 'scripts/setup_app.ps1',
+        'scripts/setup_auxiliary.ps1', 'scripts/download_auxiliary.py', 'scripts/configure_setup.py',
+        'docs/SETUP_SEPARATION_VALIDATION_2026-11-03.md']]
     files += [ROOT / name for name in ["reading_dictionary.py", "requirements-omnivoice.lock.txt", "setup_omnivoice.bat", "scripts/setup_omnivoice.ps1", "scripts/download_omnivoice.py", "scripts/verify_omnivoice.py", "docs/OMNIVOICE_GUIDE.md", "docs/OMNIVOICE_IMPLEMENTATION.md"]]
     files += sorted((ROOT / "speech").rglob("*.py"))
     files += [ROOT / name for name in ["setup_qwen3.bat", "scripts/setup_qwen3.ps1", "scripts/register_qwen3.py", "docs/QWEN3_GUIDE.md", "docs/QWEN3_INTEGRATION_VALIDATION.md", "docs/LOW_LATENCY_ARCHITECTURE.md", "docs/QWEN3_TTS_EVALUATION_2026-10-29.md"]]
