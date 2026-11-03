@@ -8,8 +8,7 @@
   <nav aria-label="管理画面"><a id="nav-voices" href="#voices">声</a><a id="nav-settings" href="#settings">設定</a><a id="nav-guide" href="#guide">使い方</a></nav>
 </header>
 <div class="status-bar"><span class="status-label">動作状況</span><span id="status" role="status" aria-live="polite" aria-atomic="true">接続しています…</span></div>
-<section id="speak-view" class="screen" aria-labelledby="speak-title">
-  <div class="screen-heading"><span class="workshop-caption">YOUR WORDS, YOUR VOICE</span><h1 id="speak-title">話したいことを、ここに。</h1><p>文を入力してEnter。選んだ声で発話します。</p></div>
+<section id="speak-view" class="screen" aria-label="発話">
   <section class="composer" aria-label="発話の入力">
     <label for="text" class="field-title">話す内容</label>
     <div class="controls"><label>発話モード<select id="speech-mode"><option value="ja">日本語</option><option value="ja_to_en">英語に翻訳</option></select></label></div><textarea id="text" placeholder="こんにちは。今日はいい天気ですね。" autofocus></textarea>
@@ -60,6 +59,6 @@
     <div class="actions"><button id="save-runtime">環境設定を保存</button><button id="load-runtime" class="secondary">モデルを読み込む</button><button id="shutdown" class="danger-outline">アプリを終了</button></div><p id="runtime-notice" role="status"></p>
   </div></details>
 </section>
-<section id="guide-view" class="screen" hidden aria-labelledby="guide-title"><div class="screen-heading"><span class="workshop-caption">WORKSHOP HANDBOOK</span><h1 id="guide-title">マニュアル</h1><p>操作・音声モデルの導入・配布について確認できます。</p></div><div class="actions"><button data-manual="user">使い方</button><button data-manual="setup" class="secondary">導入・モデルの設定</button><button data-manual="omni" class="secondary">OmniVoice・英語・読み辞書</button><button data-manual="discord" class="secondary">Discord・VB-CABLE</button><button data-manual="release" class="secondary">GitHub配布</button></div><article id="manual-content" class="composer manual"></article></section>
+<section id="guide-view" class="screen" hidden aria-labelledby="guide-title"><div class="screen-heading"><span class="workshop-caption">WORKSHOP HANDBOOK</span><h1 id="guide-title">マニュアル</h1><p>操作・音声モデルの導入・配布について確認できます。</p></div><div class="actions"><button data-manual="user">使い方</button><button data-manual="setup" class="secondary">導入・モデルの設定</button><button data-manual="omni" class="secondary">OmniVoice・英語・読み辞書</button><button data-manual="qwen3" class="secondary">Qwen3-TTS（低遅延）</button><button data-manual="discord" class="secondary">Discord・VB-CABLE</button><button data-manual="release" class="secondary">GitHub配布</button></div><article id="manual-content" class="composer manual"></article></section>
 <footer><span><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#lock"></use></svg>入力と音声は、このPC内で処理します。</span><span class="footer-signature">ECHO EGO / VOICE WORKSHOP</span></footer>
-</main><script src="/static/stream-player.js?v=20261030-qwen1"></script><script src="/static/app.js?v=20261030-qwen1"></script><script src="/static/features.js?v=20261030-qwen1"></script></body></html>
+</main><script src="/static/stream-player.js?v=20261030-qwen1"></script><script src="/static/app.js?v=20261103-enter2"></script><script src="/static/features.js?v=20261030-qwen1"></script></body></html>

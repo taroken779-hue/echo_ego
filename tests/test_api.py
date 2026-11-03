@@ -44,6 +44,15 @@ class ApiTests(unittest.TestCase):
         cls.app.service.jobs.close();cls.app.manager.close();cls.client.close()
         for item in cls.patches:item.stop()
         cls.temp.cleanup()
+    def test_qwen3_manual_is_available_from_guide(self):
+        page = self.client.get('/')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('data-manual="qwen3"', page.text)
+        guide = self.client.get('/api/manual/qwen3')
+        self.assertEqual(guide.status_code, 200)
+        self.assertIn('Qwen3-TTS', guide.json()['html'])
+        self.assertIn('setup_qwen3.bat', guide.json()['html'])
+
     def test_01_dictionary_preview_revision_and_legacy_etag(self):
         r=self.client.get('/api/v2/reading-dictionary');self.assertEqual(r.status_code,200)
         revision=r.json()['revision']

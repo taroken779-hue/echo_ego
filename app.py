@@ -378,7 +378,7 @@ def shutdown():
     return {"ok": True}
 
 
-MANUALS = {"user": "USER_GUIDE.md", "setup": "SETUP.md", "release": "DISTRIBUTION.md", "omni": "OMNIVOICE_GUIDE.md", "discord": "DISCORD_GUIDE.md"}
+MANUALS = {"user": "USER_GUIDE.md", "setup": "SETUP.md", "release": "DISTRIBUTION.md", "omni": "OMNIVOICE_GUIDE.md", "qwen3": "QWEN3_GUIDE.md", "discord": "DISCORD_GUIDE.md"}
 
 
 @app.get("/api/manual/{name}")

@@ -7,11 +7,13 @@
 ## 導入・起動
 
 1. Git for Windowsとuvをインストールします。
-2. `setup.bat` でアプリ用Python環境・OmniVoice専用環境・モデル・翻訳・文字起こしモデルを取得します。
-3. `start.bat` を実行し、ブラウザーで `http://127.0.0.1:8100/` を開きます。「準備完了」後に文を入力してEnterで発話します。
-4. 終了は `stop.bat` または設定画面の「アプリを終了」。タブを閉じるだけではGPU常駐は終了しません。
+2. ソースZIPを展開、またはこのリポジトリーを取得し、そのフォルダーの `setup.bat` を実行します。アプリ・標準OmniVoice・翻訳・文字起こしモデルを取得します。
+3. **Qwen3-TTSを使う場合は、続けて `setup_qwen3.bat` を実行**します。専用環境と0.6B Baseモデルを追加します。既存環境への追加時は、先に `stop.bat` でアプリを終了してください。
+4. `start.bat` を実行し、ブラウザーで `http://127.0.0.1:8100/` を開きます。Qwen3を使う場合は「設定 → 音声モデル・実行環境」で「Qwen3-TTS（低遅延）」を選択します。選択は自動保存されます。
+5. 「声」で選択モデル用の参照区間・文字起こしを確認して保存し、準備完了後に短い文を入力してEnterで発話します。
+6. 終了は `stop.bat` または設定画面の「アプリを終了」。タブを閉じるだけではGPU常駐は終了しません。
 
-標準はNVIDIA CUDA GPUでのOmniVoice実行です。CPUは `scripts/setup.ps1 -Cpu` で導入できますが、会話用途の応答性能は未検証です。モデルと補助モデルは初回に取得します。Irodori-TTSの導入は不要です。
+標準はNVIDIA CUDA GPUでの実行です。Qwen3低遅延版にはCUDAとbfloat16を利用できるNVIDIA GPU・対応ドライバーが必要で、CPU実行には対応しません。OmniVoiceのみCPUで使う場合は `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1 -Cpu` で導入します。CPUでの会話性能は未検証です。Qwen3使用時も翻訳・文字起こし・標準声の作成にOmniVoice側の環境を使うため、最初の `setup.bat` は必要です。詳細は[導入手順](docs/SETUP.md)を参照してください。
 
 ## マニュアル
 
@@ -19,13 +21,15 @@
 
 - [操作マニュアル](docs/USER_GUIDE.md)
 - [導入・モデル設定・エラー対処](docs/SETUP.md)
+- [Qwen3-TTSの追加導入・声の準備・生成設定](docs/QWEN3_GUIDE.md)
+- [Discord・VB-CABLEの設定と自分の発話を聞く方法](docs/DISCORD_GUIDE.md)
 - [GitHub配布・個人データ・更新の注意点](docs/DISTRIBUTION.md)
 - [第三者コンポーネント](THIRD_PARTY_NOTICES.md)
 - [実装・検証記録](docs/IMPLEMENTATION.md)
 
 ## 機能
 
-- Enterで発話、Shift＋Enterで改行、Escで全停止。IME変換確定中は送信しません。
+- Enterで発話、Shift＋Enterで改行、Escで全停止。IME変換確定中は送信しません。入力欄・発話ボタン・定型句ボタンで、発話用Enterから1秒以内の追加Enterを無視します。
 - 再生中にも次の文を生成する発話キュー。待ち文の取消と停止後の古い結果の破棄。
 - 声の試聴・名前変更・お気に入り・削除。マイク録音またはWAV登録。プリセット4種類はこのPC内で生成します。
 - 編集・並べ替え可能な定型句とAlt＋1〜9。事前生成した音声を再利用し、設定変更時は別キャッシュにします。
@@ -44,7 +48,7 @@
 
 初回と声の準備後では待ち時間が変わります。実装変更後の証拠と未検証項目は[検証記録](docs/TTS_BACKEND_VALIDATION.md)を参照してください。過去のIrodori測定値は現在のモデルの性能を示しません。
 
-起動時に保存済みの声を先行準備し、合成完了は画面へ即時通知します。生成ステップは詳細欄で32/16を比較できます。[待ち時間の実測と改善](docs/LATENCY_IMPROVEMENTS_2026-10-22.md)。
+起動時に選択モデル・保存済みの声を先行準備します。OmniVoiceは完成した音声を再生し、詳細欄で生成ステップ32/16を比較できます。Qwen3は生成途中から再生し、音声チャンク4/8を選べます。Qwen3では話す速さの変更は無効です。[OmniVoiceの待ち時間](docs/LATENCY_IMPROVEMENTS_2026-10-22.md) / [Qwen3の性能と制約](docs/QWEN3_GUIDE.md)。
 
 ## 開発と配布
 

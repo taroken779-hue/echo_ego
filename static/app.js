@@ -262,7 +262,23 @@ function pumpPlayback() {
 $('speak').onclick = () => speak().catch(e => $('message').textContent = e.message); $('stop').onclick = stop;
 $('text').addEventListener('compositionstart', () => composing = true);
 $('text').addEventListener('compositionend', () => composing = false);
-$('text').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !composing && e.keyCode !== 229) { e.preventDefault(); if (!e.repeat) speak().catch(error => $('message').textContent = error.message); } });
+let lastSpeechEnterAt = -Infinity;
+$('speak-view').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.isComposing || composing || e.keyCode === 229) return;
+  const textInput = e.target === $('text');
+  if (!textInput && !e.target.closest('#speak, .phrases button')) return;
+  if (textInput && e.shiftKey) return;
+  const now = performance.now();
+  if (e.repeat || now - lastSpeechEnterAt <= 1000) {
+    e.preventDefault();
+    return;
+  }
+  lastSpeechEnterAt = now;
+  if (textInput) {
+    e.preventDefault();
+    speak().catch(error => $('message').textContent = error.message);
+  }
+}, true);
 $('text').addEventListener('input', () => $('count').textContent = `${Array.from($('text').value).length} / 160`);
 window.addEventListener('hashchange', showView);
 $('clear').onclick = () => deleteHistory(history.map(item => item.id));
